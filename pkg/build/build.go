@@ -33,6 +33,7 @@ import (
 	apko_types "chainguard.dev/apko/pkg/build/types"
 	apko_iocomb "chainguard.dev/apko/pkg/iocomb"
 	apko_log "chainguard.dev/apko/pkg/log"
+	"go.opentelemetry.io/otel"
 	"k8s.io/kube-openapi/pkg/util/sets"
 
 	"cloud.google.com/go/storage"
@@ -415,8 +416,8 @@ type Dependencies struct {
 
 var ErrSkipThisArch = errors.New("error: skip this arch")
 
-func New(opts ...Option) (*Context, error) {
-	ctx := Context{
+func New(ctx context.Context, opts ...Option) (*Context, error) {
+	c := Context{
 		WorkspaceIgnore: ".melangeignore",
 		SourceDir:       ".",
 		OutDir:          ".",
@@ -426,12 +427,12 @@ func New(opts ...Option) (*Context, error) {
 	}
 
 	for _, opt := range opts {
-		if err := opt(&ctx); err != nil {
+		if err := opt(&c); err != nil {
 			return nil, err
 		}
 	}
 
-	writer, err := apko_iocomb.Combine(ctx.LogPolicy)
+	writer, err := apko_iocomb.Combine(c.LogPolicy)
 	if err != nil {
 		return nil, err
 	}
@@ -442,72 +443,72 @@ func New(opts ...Option) (*Context, error) {
 	}
 
 	fields := apko_log.Fields{
-		"arch": ctx.Arch.ToAPK(),
+		"arch": c.Arch.ToAPK(),
 	}
-	ctx.Logger = logger.WithFields(fields)
+	c.Logger = logger.WithFields(fields)
 
 	// try to get the runner
-	runner, err := container.GetRunner(ctx.RunnerName, ctx.Logger)
+	runner, err := container.GetRunner(ctx, c.RunnerName, c.Logger)
 	if err != nil {
-		return nil, fmt.Errorf("unable to get runner %s: %w", ctx.RunnerName, err)
+		return nil, fmt.Errorf("unable to get runner %s: %w", c.RunnerName, err)
 	}
-	ctx.Runner = runner
+	c.Runner = runner
 
 	// If no workspace directory is explicitly requested, create a
 	// temporary directory for it.  Otherwise, ensure we are in a
 	// subdir for this specific build context.
-	if ctx.WorkspaceDir != "" {
+	if c.WorkspaceDir != "" {
 		// If we are continuing the build, do not modify the workspace
 		// directory path.
 		// TODO(kaniini): Clean up the logic for this, perhaps by signalling
 		// multi-arch builds to the build context.
-		if ctx.ContinueLabel == "" {
-			ctx.WorkspaceDir = filepath.Join(ctx.WorkspaceDir, ctx.Arch.ToAPK())
+		if c.ContinueLabel == "" {
+			c.WorkspaceDir = filepath.Join(c.WorkspaceDir, c.Arch.ToAPK())
 		}
 
 		// Get the absolute path to the workspace dir, which is needed for bind
 		// mounts.
-		absdir, err := filepath.Abs(ctx.WorkspaceDir)
+		absdir, err := filepath.Abs(c.WorkspaceDir)
 		if err != nil {
-			return nil, fmt.Errorf("unable to resolve path %s: %w", ctx.WorkspaceDir, err)
+			return nil, fmt.Errorf("unable to resolve path %s: %w", c.WorkspaceDir, err)
 		}
 
-		ctx.WorkspaceDir = absdir
+		c.WorkspaceDir = absdir
 	} else {
-		tmpdir, err := os.MkdirTemp(ctx.Runner.TempDir(), "melange-workspace-*")
+		tmpdir, err := os.MkdirTemp(c.Runner.TempDir(), "melange-workspace-*")
 		if err != nil {
 			return nil, fmt.Errorf("unable to create workspace dir: %w", err)
 		}
-		ctx.WorkspaceDir = tmpdir
+		c.WorkspaceDir = tmpdir
 	}
 
 	// If no config file is explicitly requested for the build context
 	// we check if .melange.yaml or melange.yaml exist.
 	checks := []string{".melange.yaml", ".melange.yml", "melange.yaml", "melange.yml"}
-	if ctx.ConfigFile == "" {
+	if c.ConfigFile == "" {
 		for _, chk := range checks {
 			if _, err := os.Stat(chk); err == nil {
-				ctx.Logger.Printf("no configuration file provided -- using %s", chk)
-				ctx.ConfigFile = chk
+				c.Logger.Printf("no configuration file provided -- using %s", chk)
+				c.ConfigFile = chk
 				break
 			}
 		}
 	}
 
 	// If no config file could be automatically detected, error.
-	if ctx.ConfigFile == "" {
+	if c.ConfigFile == "" {
 		return nil, fmt.Errorf("melange.yaml is missing")
 	}
 
-	if err := ctx.Configuration.Load(ctx); err != nil {
+	if err := c.Configuration.Load(c); err != nil {
 		return nil, fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	if len(ctx.Configuration.Package.TargetArchitecture) == 1 &&
-		ctx.Configuration.Package.TargetArchitecture[0] == "all" {
-		ctx.Logger.Printf("WARNING: target-architecture: ['all'] is deprecated and will become an error; remove this field to build for all available archs")
-	} else if len(ctx.Configuration.Package.TargetArchitecture) != 0 &&
-		!sets.NewString(ctx.Configuration.Package.TargetArchitecture...).Has(ctx.Arch.ToAPK()) {
+	if len(c.Configuration.Package.TargetArchitecture) == 1 &&
+		c.Configuration.Package.TargetArchitecture[0] == "all" {
+		c.Logger.Printf("WARNING: target-architecture: ['all'] is deprecated and will become an error; remove this field to build for all available archs")
+	} else if len(c.Configuration.Package.TargetArchitecture) != 0 &&
+		!sets.NewString(c.Configuration.Package.TargetArchitecture...).Has(c.Arch.ToAPK()) {
 		return nil, ErrSkipThisArch
 	}
 
@@ -523,34 +524,34 @@ func New(opts ...Option) (*Context, error) {
 			return nil, fmt.Errorf("failed to parse SOURCE_DATE_EPOCH: %w", err)
 		}
 
-		ctx.SourceDateEpoch = time.Unix(sec, 0)
+		c.SourceDateEpoch = time.Unix(sec, 0)
 	}
 
 	// Check that we actually can run things in containers.
-	if !runner.TestUsability() {
+	if !runner.TestUsability(ctx) {
 		return nil, fmt.Errorf("unable to run containers using %s, specify --runner and one of %s", runner.Name(), GetAllRunners())
 	}
 
 	// Apply build options to the context.
-	for _, optName := range ctx.EnabledBuildOptions {
-		ctx.Logger.Printf("applying configuration patches for build option %s", optName)
+	for _, optName := range c.EnabledBuildOptions {
+		c.Logger.Printf("applying configuration patches for build option %s", optName)
 
-		if opt, ok := ctx.Configuration.Options[optName]; ok {
-			if err := opt.Apply(&ctx); err != nil {
+		if opt, ok := c.Configuration.Options[optName]; ok {
+			if err := opt.Apply(&c); err != nil {
 				return nil, err
 			}
 		}
 	}
 
-	return &ctx, nil
+	return &c, nil
 }
 
 type Option func(*Context) error
 
 // WithConfig sets the configuration file used for the package build context.
 func WithConfig(configFile string) Option {
-	return func(ctx *Context) error {
-		ctx.ConfigFile = configFile
+	return func(c *Context) error {
+		c.ConfigFile = configFile
 		return nil
 	}
 }
@@ -579,64 +580,64 @@ func WithBuildDate(s string) Option {
 
 // WithWorkspaceDir sets the workspace directory to use.
 func WithWorkspaceDir(workspaceDir string) Option {
-	return func(ctx *Context) error {
-		ctx.WorkspaceDir = workspaceDir
+	return func(c *Context) error {
+		c.WorkspaceDir = workspaceDir
 		return nil
 	}
 }
 
 // WithGuestDir sets the guest directory to use.
 func WithGuestDir(guestDir string) Option {
-	return func(ctx *Context) error {
-		ctx.GuestDir = guestDir
+	return func(c *Context) error {
+		c.GuestDir = guestDir
 		return nil
 	}
 }
 
 // WithWorkspaceIgnore sets the workspace ignore rules file to use.
 func WithWorkspaceIgnore(workspaceIgnore string) Option {
-	return func(ctx *Context) error {
-		ctx.WorkspaceIgnore = workspaceIgnore
+	return func(c *Context) error {
+		c.WorkspaceIgnore = workspaceIgnore
 		return nil
 	}
 }
 
 // WithEmptyWorkspace sets whether the workspace should be empty.
 func WithEmptyWorkspace(emptyWorkspace bool) Option {
-	return func(ctx *Context) error {
-		ctx.EmptyWorkspace = emptyWorkspace
+	return func(c *Context) error {
+		c.EmptyWorkspace = emptyWorkspace
 		return nil
 	}
 }
 
 // WithPipelineDir sets the pipeline directory to extend the built-in pipeline directory.
 func WithPipelineDir(pipelineDir string) Option {
-	return func(ctx *Context) error {
-		ctx.PipelineDir = pipelineDir
+	return func(c *Context) error {
+		c.PipelineDir = pipelineDir
 		return nil
 	}
 }
 
 // WithBuiltinPipelineDirectory sets the pipeline directory to use.
 func WithBuiltinPipelineDirectory(builtinPipelineDir string) Option {
-	return func(ctx *Context) error {
-		ctx.BuiltinPipelineDir = builtinPipelineDir
+	return func(c *Context) error {
+		c.BuiltinPipelineDir = builtinPipelineDir
 		return nil
 	}
 }
 
 // WithSourceDir sets the source directory to use.
 func WithSourceDir(sourceDir string) Option {
-	return func(ctx *Context) error {
-		ctx.SourceDir = sourceDir
+	return func(c *Context) error {
+		c.SourceDir = sourceDir
 		return nil
 	}
 }
 
 // WithCacheDir sets the cache directory to use.
 func WithCacheDir(cacheDir string) Option {
-	return func(ctx *Context) error {
-		ctx.CacheDir = cacheDir
+	return func(c *Context) error {
+		c.CacheDir = cacheDir
 		return nil
 	}
 }
@@ -644,70 +645,70 @@ func WithCacheDir(cacheDir string) Option {
 // WithCacheSource sets the cache source directory to use.  The cache will be
 // pre-populated from this source directory.
 func WithCacheSource(sourceDir string) Option {
-	return func(ctx *Context) error {
-		ctx.CacheSource = sourceDir
+	return func(c *Context) error {
+		c.CacheSource = sourceDir
 		return nil
 	}
 }
 
 // WithSigningKey sets the signing key path to use.
 func WithSigningKey(signingKey string) Option {
-	return func(ctx *Context) error {
+	return func(c *Context) error {
 		if signingKey != "" {
 			if _, err := os.Stat(signingKey); err != nil {
 				return fmt.Errorf("could not open signing key: %w", err)
 			}
 		}
 
-		ctx.SigningKey = signingKey
+		c.SigningKey = signingKey
 		return nil
 	}
 }
 
 // WithGenerateIndex sets whether or not the apk index should be generated.
 func WithGenerateIndex(generateIndex bool) Option {
-	return func(ctx *Context) error {
-		ctx.GenerateIndex = generateIndex
+	return func(c *Context) error {
+		c.GenerateIndex = generateIndex
 		return nil
 	}
 }
 
 // WithOutDir sets the output directory to use for the packages.
 func WithOutDir(outDir string) Option {
-	return func(ctx *Context) error {
-		ctx.OutDir = outDir
+	return func(c *Context) error {
+		c.OutDir = outDir
 		return nil
 	}
 }
 
 // WithArch sets the build architecture to use for this build context.
 func WithArch(arch apko_types.Architecture) Option {
-	return func(ctx *Context) error {
-		ctx.Arch = arch
+	return func(c *Context) error {
+		c.Arch = arch
 		return nil
 	}
 }
 
 // WithExtraKeys adds a set of extra keys to the build context.
 func WithExtraKeys(extraKeys []string) Option {
-	return func(ctx *Context) error {
-		ctx.ExtraKeys = extraKeys
+	return func(c *Context) error {
+		c.ExtraKeys = extraKeys
 		return nil
 	}
 }
 
 // WithExtraRepos adds a set of extra repos to the build context.
 func WithExtraRepos(extraRepos []string) Option {
-	return func(ctx *Context) error {
-		ctx.ExtraRepos = extraRepos
+	return func(c *Context) error {
+		c.ExtraRepos = extraRepos
 		return nil
 	}
 }
 
 // WithDependencyLog sets a filename to use for dependency logging.
 func WithDependencyLog(logFile string) Option {
-	return func(ctx *Context) error {
-		ctx.DependencyLog = logFile
+	return func(c *Context) error {
+		c.DependencyLog = logFile
 		return nil
 	}
 }
@@ -715,8 +716,8 @@ func WithDependencyLog(logFile string) Option {
 // WithBinShOverlay sets a filename to copy from when installing /bin/sh
 // into a build environment.
 func WithBinShOverlay(binShOverlay string) Option {
-	return func(ctx *Context) error {
-		ctx.BinShOverlay = binShOverlay
+	return func(c *Context) error {
+		c.BinShOverlay = binShOverlay
 		return nil
 	}
 }
@@ -724,8 +725,8 @@ func WithBinShOverlay(binShOverlay string) Option {
 // WithBreakpointLabel sets a label to stop build execution at.  The build
 // environment and workspace are preserved.
 func WithBreakpointLabel(breakpointLabel string) Option {
-	return func(ctx *Context) error {
-		ctx.BreakpointLabel = breakpointLabel
+	return func(c *Context) error {
+		c.BreakpointLabel = breakpointLabel
 		return nil
 	}
 }
@@ -733,8 +734,8 @@ func WithBreakpointLabel(breakpointLabel string) Option {
 // WithContinueLabel sets a label to continue build execution from.  This
 // requires a preserved build environment and workspace.
 func WithContinueLabel(continueLabel string) Option {
-	return func(ctx *Context) error {
-		ctx.ContinueLabel = continueLabel
+	return func(c *Context) error {
+		c.ContinueLabel = continueLabel
 		return nil
 	}
 }
@@ -745,8 +746,8 @@ func WithContinueLabel(continueLabel string) Option {
 // should be stripped when building "bootstrap" repositories, as the
 // cross-sysroot packages will be preferred over the native ones otherwise.
 func WithStripOriginName(stripOriginName bool) Option {
-	return func(ctx *Context) error {
-		ctx.StripOriginName = stripOriginName
+	return func(c *Context) error {
+		c.StripOriginName = stripOriginName
 		return nil
 	}
 }
@@ -756,8 +757,8 @@ func WithStripOriginName(stripOriginName bool) Option {
 // toolchain as well as any other desired environment settings for the
 // build environment.
 func WithEnvFile(envFile string) Option {
-	return func(ctx *Context) error {
-		ctx.EnvFile = envFile
+	return func(c *Context) error {
+		c.EnvFile = envFile
 		return nil
 	}
 }
@@ -765,8 +766,8 @@ func WithEnvFile(envFile string) Option {
 // WithVarsFile specifies a variables file to use to populate the build
 // configuration variables block.
 func WithVarsFile(varsFile string) Option {
-	return func(ctx *Context) error {
-		ctx.VarsFile = varsFile
+	return func(c *Context) error {
+		c.VarsFile = varsFile
 		return nil
 	}
 }
@@ -775,8 +776,8 @@ func WithVarsFile(varsFile string) Option {
 // identifying the built apk in the generated SBOM. If no namespace is provided
 // "unknown" will be listed as namespace.
 func WithNamespace(namespace string) Option {
-	return func(ctx *Context) error {
-		ctx.Namespace = namespace
+	return func(c *Context) error {
+		c.Namespace = namespace
 		return nil
 	}
 }
@@ -786,8 +787,8 @@ func WithNamespace(namespace string) Option {
 // and represent patches to the configured build process which are optionally
 // applied.
 func WithEnabledBuildOptions(enabledBuildOptions []string) Option {
-	return func(ctx *Context) error {
-		ctx.EnabledBuildOptions = enabledBuildOptions
+	return func(c *Context) error {
+		c.EnabledBuildOptions = enabledBuildOptions
 		return nil
 	}
 }
@@ -796,24 +797,24 @@ func WithEnabledBuildOptions(enabledBuildOptions []string) Option {
 // list of packages that were built.  Some packages may have been skipped
 // during the build if , so it can be hard to know exactly which packages were built
 func WithCreateBuildLog(createBuildLog bool) Option {
-	return func(ctx *Context) error {
-		ctx.CreateBuildLog = createBuildLog
+	return func(c *Context) error {
+		c.CreateBuildLog = createBuildLog
 		return nil
 	}
 }
 
 // WithDebug indicates whether debug logging of pipelines should be enabled.
 func WithDebug(debug bool) Option {
-	return func(ctx *Context) error {
-		ctx.Debug = debug
+	return func(c *Context) error {
+		c.Debug = debug
 		return nil
 	}
 }
 
 // WithLogPolicy sets the logging policy to use during builds.
 func WithLogPolicy(policy []string) Option {
-	return func(ctx *Context) error {
-		ctx.LogPolicy = policy
+	return func(c *Context) error {
+		c.LogPolicy = policy
 		return nil
 	}
 }
@@ -821,8 +822,8 @@ func WithLogPolicy(policy []string) Option {
 // WithRunner specifies what runner to use to wrap
 // the build environment.
 func WithRunner(runner string) Option {
-	return func(ctx *Context) error {
-		ctx.RunnerName = runner
+	return func(c *Context) error {
+		c.RunnerName = runner
 		return nil
 	}
 }
@@ -1145,12 +1146,12 @@ func (cfg Configuration) validate() error {
 }
 
 // Load the configuration data from the build context configuration file.
-func (cfg *Configuration) Load(ctx Context) error {
+func (cfg *Configuration) Load(c Context) error {
 	parsedCfg, err := ParseConfiguration(
-		ctx.ConfigFile,
-		WithEnvFileForParsing(ctx.EnvFile),
-		WithLogger(ctx.Logger),
-		WithVarsFileForParsing(ctx.VarsFile),
+		c.ConfigFile,
+		WithEnvFileForParsing(c.EnvFile),
+		WithLogger(c.Logger),
+		WithVarsFileForParsing(c.VarsFile),
 	)
 	if err != nil {
 		return err
@@ -1179,25 +1180,28 @@ func (cfg Configuration) PackageURLs(distro string) []string {
 }
 
 // BuildGuest invokes apko to build the guest environment.
-func (ctx *Context) BuildGuest() error {
+func (c *Context) BuildGuest(ctx context.Context) error {
+	ctx, span := otel.Tracer("").Start(ctx, "BuildGuest")
+	defer span.End()
+
 	// Prepare workspace directory
-	if err := os.MkdirAll(ctx.WorkspaceDir, 0755); err != nil {
-		return fmt.Errorf("mkdir -p %s: %w", ctx.WorkspaceDir, err)
+	if err := os.MkdirAll(c.WorkspaceDir, 0755); err != nil {
+		return fmt.Errorf("mkdir -p %s: %w", c.WorkspaceDir, err)
 	}
 
 	// Prepare guest directory
-	if err := os.MkdirAll(ctx.GuestDir, 0755); err != nil {
-		return fmt.Errorf("mkdir -p %s: %w", ctx.GuestDir, err)
+	if err := os.MkdirAll(c.GuestDir, 0755); err != nil {
+		return fmt.Errorf("mkdir -p %s: %w", c.GuestDir, err)
 	}
 
-	ctx.Logger.Printf("building workspace in '%s' with apko", ctx.GuestDir)
+	c.Logger.Printf("building workspace in '%s' with apko", c.GuestDir)
 
-	bc, err := apko_build.New(ctx.GuestDir,
-		apko_build.WithImageConfiguration(ctx.Configuration.Environment),
-		apko_build.WithArch(ctx.Arch),
-		apko_build.WithExtraKeys(ctx.ExtraKeys),
-		apko_build.WithExtraRepos(ctx.ExtraRepos),
-		apko_build.WithLogger(ctx.Logger),
+	bc, err := apko_build.New(c.GuestDir,
+		apko_build.WithImageConfiguration(c.Configuration.Environment),
+		apko_build.WithArch(c.Arch),
+		apko_build.WithExtraKeys(c.ExtraKeys),
+		apko_build.WithExtraRepos(c.ExtraRepos),
+		apko_build.WithLogger(c.Logger),
 		apko_build.WithDebugLogging(true),
 		apko_build.WithLocal(true),
 	)
@@ -1216,9 +1220,9 @@ func (ctx *Context) BuildGuest() error {
 		return fmt.Errorf("unable to generate image: %w", err)
 	}
 	// if the runner needs an image, create an OCI image from the directory and load it.
-	loader := ctx.Runner.OCIImageLoader()
+	loader := c.Runner.OCIImageLoader()
 	if loader == nil {
-		return fmt.Errorf("runner %s does not support OCI image loading", ctx.Runner.Name())
+		return fmt.Errorf("runner %s does not support OCI image loading", c.Runner.Name())
 	}
 	layerTarGZ, err := bc.ImageLayoutToLayer()
 	if err != nil {
@@ -1226,17 +1230,17 @@ func (ctx *Context) BuildGuest() error {
 	}
 	defer os.Remove(layerTarGZ)
 
-	ctx.Logger.Printf("using %s for image layer", layerTarGZ)
+	c.Logger.Printf("using %s for image layer", layerTarGZ)
 
-	ref, err := loader.LoadImage(layerTarGZ, ctx.Arch, bc)
+	ref, err := loader.LoadImage(ctx, layerTarGZ, c.Arch, bc)
 	if err != nil {
 		return err
 	}
 
-	ctx.Logger.Printf("pushed %s as %v", layerTarGZ, ref)
-	ctx.imgRef = ref
+	c.Logger.Printf("pushed %s as %v", layerTarGZ, ref)
+	c.imgRef = ref
 
-	ctx.Logger.Printf("successfully built workspace with apko")
+	c.Logger.Printf("successfully built workspace with apko")
 
 	return nil
 }
@@ -1273,8 +1277,8 @@ func copyFile(base, src, dest string, perm fs.FileMode) error {
 	return nil
 }
 
-func (ctx *Context) LoadIgnoreRules() error {
-	ignorePath := filepath.Join(ctx.SourceDir, ctx.WorkspaceIgnore)
+func (c *Context) LoadIgnoreRules() error {
+	ignorePath := filepath.Join(c.SourceDir, c.WorkspaceIgnore)
 
 	if _, err := os.Stat(ignorePath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1284,7 +1288,7 @@ func (ctx *Context) LoadIgnoreRules() error {
 		return err
 	}
 
-	ctx.Logger.Printf("loading ignore rules from %s", ignorePath)
+	c.Logger.Printf("loading ignore rules from %s", ignorePath)
 
 	inF, err := os.Open(ignorePath)
 	if err != nil {
@@ -1304,14 +1308,14 @@ func (ctx *Context) LoadIgnoreRules() error {
 			return err
 		}
 
-		ctx.ignorePatterns = append(ctx.ignorePatterns, pattern)
+		c.ignorePatterns = append(c.ignorePatterns, pattern)
 	}
 
 	return nil
 }
 
-func (ctx *Context) matchesIgnorePattern(path string) bool {
-	for _, pat := range ctx.ignorePatterns {
+func (c *Context) matchesIgnorePattern(path string) bool {
+	for _, pat := range c.ignorePatterns {
 		if pat.Match(path) {
 			return true
 		}
@@ -1320,14 +1324,14 @@ func (ctx *Context) matchesIgnorePattern(path string) bool {
 	return false
 }
 
-func (ctx *Context) OverlayBinSh() error {
-	if ctx.BinShOverlay == "" {
+func (c *Context) OverlayBinSh() error {
+	if c.BinShOverlay == "" {
 		return nil
 	}
 
-	targetPath := filepath.Join(ctx.GuestDir, "bin", "sh")
+	targetPath := filepath.Join(c.GuestDir, "bin", "sh")
 
-	inF, err := os.Open(ctx.BinShOverlay)
+	inF, err := os.Open(c.BinShOverlay)
 	if err != nil {
 		return fmt.Errorf("copying overlay /bin/sh: %w", err)
 	}
@@ -1355,18 +1359,18 @@ func (ctx *Context) OverlayBinSh() error {
 	return nil
 }
 
-func (ctx *Context) fetchBucket(cmm CacheMembershipMap) (string, error) {
+func (c *Context) fetchBucket(cmm CacheMembershipMap) (string, error) {
 	cctx := context.TODO()
 
 	tmp, err := os.MkdirTemp("", "melange-cache")
 	if err != nil {
 		return "", err
 	}
-	bucket, prefix, _ := strings.Cut(strings.TrimPrefix(ctx.CacheSource, "gs://"), "/")
+	bucket, prefix, _ := strings.Cut(strings.TrimPrefix(c.CacheSource, "gs://"), "/")
 
 	client, err := storage.NewClient(cctx)
 	if err != nil {
-		ctx.Logger.Printf("downgrading to anonymous mode: %s", err)
+		c.Logger.Printf("downgrading to anonymous mode: %s", err)
 
 		client, err = storage.NewClient(cctx, option.WithoutAuthentication())
 		if err != nil {
@@ -1401,7 +1405,7 @@ func (ctx *Context) fetchBucket(cmm CacheMembershipMap) (string, error) {
 		if err := rc.Close(); err != nil {
 			return tmp, fmt.Errorf("failed to close remote cache object %s: %w", on, err)
 		}
-		ctx.Logger.Printf("cached gs://%s/%s -> %s", bucket, on, w.Name())
+		c.Logger.Printf("cached gs://%s/%s -> %s", bucket, on, w.Name())
 	}
 
 	return tmp, nil
@@ -1410,32 +1414,35 @@ func (ctx *Context) fetchBucket(cmm CacheMembershipMap) (string, error) {
 // IsBuildLess returns true if the build context does not actually do any building.
 // TODO(kaniini): Improve the heuristic for this by checking for uses/runs statements
 // in the pipeline.
-func (ctx *Context) IsBuildLess() bool {
-	return len(ctx.Configuration.Pipeline) == 0
+func (c *Context) IsBuildLess() bool {
+	return len(c.Configuration.Pipeline) == 0
 }
 
-func (ctx *Context) PopulateCache() error {
-	cmm, err := cacheItemsForBuild(ctx.ConfigFile)
+func (c *Context) PopulateCache(ctx context.Context) error {
+	ctx, span := otel.Tracer("").Start(ctx, "PopulateCache")
+	defer span.End()
+
+	cmm, err := cacheItemsForBuild(c.ConfigFile)
 	if err != nil {
 		return fmt.Errorf("while determining which objects to fetch: %w", err)
 	}
 
-	ctx.Logger.Printf("populating cache from %s", ctx.CacheSource)
+	c.Logger.Printf("populating cache from %s", c.CacheSource)
 
 	// --cache-dir=gs://bucket/path/to/cache first pulls all found objects to a
 	// tmp dir which is subsequently used as the cache.
-	if strings.HasPrefix(ctx.CacheSource, "gs://") {
-		tmp, err := ctx.fetchBucket(cmm)
+	if strings.HasPrefix(c.CacheSource, "gs://") {
+		tmp, err := c.fetchBucket(cmm)
 		if err != nil {
 			return err
 		}
 		defer os.RemoveAll(tmp)
-		ctx.Logger.Printf("cache bucket copied to %s", tmp)
+		c.Logger.Printf("cache bucket copied to %s", tmp)
 
 		fsys := os.DirFS(tmp)
 
 		// mkdir /var/cache/melange
-		if err := os.MkdirAll(ctx.CacheDir, 0o755); err != nil {
+		if err := os.MkdirAll(c.CacheDir, 0o755); err != nil {
 			return err
 		}
 
@@ -1467,9 +1474,9 @@ func (ctx *Context) PopulateCache() error {
 				return nil
 			}
 
-			ctx.Logger.Printf("  -> %s", path)
+			c.Logger.Printf("  -> %s", path)
 
-			if err := copyFile(tmp, path, ctx.CacheDir, mode.Perm()); err != nil {
+			if err := copyFile(tmp, path, c.CacheDir, mode.Perm()); err != nil {
 				return err
 			}
 
@@ -1480,19 +1487,22 @@ func (ctx *Context) PopulateCache() error {
 	return nil
 }
 
-func (ctx *Context) PopulateWorkspace() error {
-	if ctx.EmptyWorkspace {
-		ctx.Logger.Printf("empty workspace requested")
+func (c *Context) PopulateWorkspace(ctx context.Context) error {
+	ctx, span := otel.Tracer("").Start(ctx, "PopulateWorkspace")
+	defer span.End()
+
+	if c.EmptyWorkspace {
+		c.Logger.Printf("empty workspace requested")
 		return nil
 	}
 
-	if err := ctx.LoadIgnoreRules(); err != nil {
+	if err := c.LoadIgnoreRules(); err != nil {
 		return err
 	}
 
-	ctx.Logger.Printf("populating workspace %s from %s", ctx.WorkspaceDir, ctx.SourceDir)
+	c.Logger.Printf("populating workspace %s from %s", c.WorkspaceDir, c.SourceDir)
 
-	fsys := os.DirFS(ctx.SourceDir)
+	fsys := os.DirFS(c.SourceDir)
 
 	return fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -1509,13 +1519,13 @@ func (ctx *Context) PopulateWorkspace() error {
 			return nil
 		}
 
-		if ctx.matchesIgnorePattern(path) {
+		if c.matchesIgnorePattern(path) {
 			return nil
 		}
 
-		ctx.Logger.Printf("  -> %s", path)
+		c.Logger.Printf("  -> %s", path)
 
-		if err := copyFile(ctx.SourceDir, path, ctx.WorkspaceDir, mode.Perm()); err != nil {
+		if err := copyFile(c.SourceDir, path, c.WorkspaceDir, mode.Perm()); err != nil {
 			return err
 		}
 
@@ -1545,60 +1555,63 @@ func (sp Subpackage) ShouldRun(pctx *PipelineContext) (bool, error) {
 	return result, nil
 }
 
-func (ctx *Context) BuildPackage() error {
-	ctx.Summarize()
+func (c *Context) BuildPackage(ctx context.Context) error {
+	ctx, span := otel.Tracer("").Start(ctx, "BuildPackage")
+	defer span.End()
+
+	c.Summarize()
 
 	pctx := PipelineContext{
-		Context: ctx,
-		Package: &ctx.Configuration.Package,
+		Context: c,
+		Package: &c.Configuration.Package,
 	}
 
-	if ctx.GuestDir == "" {
-		guestDir, err := os.MkdirTemp(ctx.Runner.TempDir(), "melange-guest-*")
+	if c.GuestDir == "" {
+		guestDir, err := os.MkdirTemp(c.Runner.TempDir(), "melange-guest-*")
 		if err != nil {
 			return fmt.Errorf("unable to make guest directory: %w", err)
 		}
-		ctx.GuestDir = guestDir
+		c.GuestDir = guestDir
 	}
 
-	ctx.Logger.Printf("evaluating pipelines for package requirements")
-	for _, p := range ctx.Configuration.Pipeline {
+	c.Logger.Printf("evaluating pipelines for package requirements")
+	for _, p := range c.Configuration.Pipeline {
 		if err := p.ApplyNeeds(&pctx); err != nil {
 			return fmt.Errorf("unable to apply pipeline requirements: %w", err)
 		}
 	}
 
-	if !ctx.IsBuildLess() {
-		if err := ctx.BuildGuest(); err != nil {
+	if !c.IsBuildLess() {
+		if err := c.BuildGuest(ctx); err != nil {
 			return fmt.Errorf("unable to build guest: %w", err)
 		}
 
 		// TODO(kaniini): Make overlay-binsh work with Docker and Kubernetes.
 		// Probably needs help from apko.
-		if err := ctx.OverlayBinSh(); err != nil {
+		if err := c.OverlayBinSh(); err != nil {
 			return fmt.Errorf("unable to install overlay /bin/sh: %w", err)
 		}
 
-		if err := ctx.PopulateCache(); err != nil {
+		if err := c.PopulateCache(ctx); err != nil {
 			return fmt.Errorf("unable to populate cache: %w", err)
 		}
 	}
 
-	if err := ctx.PopulateWorkspace(); err != nil {
+	if err := c.PopulateWorkspace(ctx); err != nil {
 		return fmt.Errorf("unable to populate workspace: %w", err)
 	}
 
-	cfg := ctx.WorkspaceConfig()
-	if !ctx.IsBuildLess() {
-		cfg.Arch = ctx.Arch
-		if err := ctx.Runner.StartPod(cfg); err != nil {
+	cfg := c.WorkspaceConfig()
+	if !c.IsBuildLess() {
+		cfg.Arch = c.Arch
+		if err := c.Runner.StartPod(ctx, cfg); err != nil {
 			return fmt.Errorf("unable to start pod: %w", err)
 		}
 
 		// run the main pipeline
-		ctx.Logger.Printf("running the main pipeline")
-		for _, p := range ctx.Configuration.Pipeline {
-			if _, err := p.Run(&pctx); err != nil {
+		c.Logger.Printf("running the main pipeline")
+		for _, p := range c.Configuration.Pipeline {
+			if _, err := p.Run(ctx, &pctx); err != nil {
 				return fmt.Errorf("unable to run pipeline: %w", err)
 			}
 		}
@@ -1612,17 +1625,17 @@ func (ctx *Context) BuildPackage() error {
 
 	// Capture languages declared in pipelines
 	langs := []string{}
-	namespace := ctx.Namespace
+	namespace := c.Namespace
 	if namespace == "" {
 		namespace = "unknown"
 	}
 
 	// run any pipelines for subpackages
-	for _, sp := range ctx.Configuration.Subpackages {
+	for _, sp := range c.Configuration.Subpackages {
 		langs := []string{}
 
-		if !ctx.IsBuildLess() {
-			ctx.Logger.Printf("running pipeline for subpackage %s", sp.Name)
+		if !c.IsBuildLess() {
+			c.Logger.Printf("running pipeline for subpackage %s", sp.Name)
 			pctx.Subpackage = &sp
 
 			result, err := sp.ShouldRun(&pctx)
@@ -1634,44 +1647,44 @@ func (ctx *Context) BuildPackage() error {
 			}
 
 			for _, p := range sp.Pipeline {
-				if _, err := p.Run(&pctx); err != nil {
+				if _, err := p.Run(ctx, &pctx); err != nil {
 					return fmt.Errorf("unable to run pipeline: %w", err)
 				}
 				langs = append(langs, p.SBOM.Language)
 			}
 		}
 
-		if err := os.MkdirAll(filepath.Join(ctx.WorkspaceDir, "melange-out", sp.Name), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(c.WorkspaceDir, "melange-out", sp.Name), 0o755); err != nil {
 			return err
 		}
 
 		if err := generator.GenerateSBOM(&sbom.Spec{
-			Path:           filepath.Join(ctx.WorkspaceDir, "melange-out", sp.Name),
+			Path:           filepath.Join(c.WorkspaceDir, "melange-out", sp.Name),
 			PackageName:    sp.Name,
-			PackageVersion: fmt.Sprintf("%s-r%d", ctx.Configuration.Package.Version, ctx.Configuration.Package.Epoch),
+			PackageVersion: fmt.Sprintf("%s-r%d", c.Configuration.Package.Version, c.Configuration.Package.Epoch),
 			Languages:      langs,
-			License:        ctx.Configuration.Package.LicenseExpression(),
-			Copyright:      ctx.Configuration.Package.FullCopyright(),
+			License:        c.Configuration.Package.LicenseExpression(),
+			Copyright:      c.Configuration.Package.FullCopyright(),
 			Namespace:      namespace,
-			Arch:           ctx.Arch.ToAPK(),
+			Arch:           c.Arch.ToAPK(),
 		}); err != nil {
 			return fmt.Errorf("writing SBOMs: %w", err)
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Join(ctx.WorkspaceDir, "melange-out", ctx.Configuration.Package.Name), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(c.WorkspaceDir, "melange-out", c.Configuration.Package.Name), 0o755); err != nil {
 		return err
 	}
 
 	if err := generator.GenerateSBOM(&sbom.Spec{
-		Path:           filepath.Join(ctx.WorkspaceDir, "melange-out", ctx.Configuration.Package.Name),
-		PackageName:    ctx.Configuration.Package.Name,
-		PackageVersion: fmt.Sprintf("%s-r%d", ctx.Configuration.Package.Version, ctx.Configuration.Package.Epoch),
+		Path:           filepath.Join(c.WorkspaceDir, "melange-out", c.Configuration.Package.Name),
+		PackageName:    c.Configuration.Package.Name,
+		PackageVersion: fmt.Sprintf("%s-r%d", c.Configuration.Package.Version, c.Configuration.Package.Epoch),
 		Languages:      langs,
-		License:        ctx.Configuration.Package.LicenseExpression(),
-		Copyright:      ctx.Configuration.Package.FullCopyright(),
+		License:        c.Configuration.Package.LicenseExpression(),
+		Copyright:      c.Configuration.Package.FullCopyright(),
 		Namespace:      namespace,
-		Arch:           ctx.Arch.ToAPK(),
+		Arch:           c.Arch.ToAPK(),
 	}); err != nil {
 		return fmt.Errorf("writing SBOMs: %w", err)
 	}
@@ -1683,7 +1696,7 @@ func (ctx *Context) BuildPackage() error {
 	}
 
 	// emit subpackages
-	for _, sp := range ctx.Configuration.Subpackages {
+	for _, sp := range c.Configuration.Subpackages {
 		pctx.Subpackage = &sp
 
 		result, err := sp.ShouldRun(&pctx)
@@ -1699,33 +1712,33 @@ func (ctx *Context) BuildPackage() error {
 		}
 	}
 
-	if !ctx.IsBuildLess() {
+	if !c.IsBuildLess() {
 		// terminate pod
-		if err := ctx.Runner.TerminatePod(cfg); err != nil {
-			ctx.Logger.Printf("WARNING: unable to terminate pod: %s", err)
+		if err := c.Runner.TerminatePod(ctx, cfg); err != nil {
+			c.Logger.Printf("WARNING: unable to terminate pod: %s", err)
 		}
 
 		// clean build guest container
-		if err := os.RemoveAll(ctx.GuestDir); err != nil {
-			ctx.Logger.Printf("WARNING: unable to clean guest container: %s", err)
+		if err := os.RemoveAll(c.GuestDir); err != nil {
+			c.Logger.Printf("WARNING: unable to clean guest container: %s", err)
 		}
 	}
 
 	// clean build environment
-	if err := os.RemoveAll(ctx.WorkspaceDir); err != nil {
-		ctx.Logger.Printf("WARNING: unable to clean workspace: %s", err)
+	if err := os.RemoveAll(c.WorkspaceDir); err != nil {
+		c.Logger.Printf("WARNING: unable to clean workspace: %s", err)
 	}
 
 	// generate APKINDEX.tar.gz and sign it
-	if ctx.GenerateIndex {
+	if c.GenerateIndex {
 		packageDir := filepath.Join(pctx.Context.OutDir, pctx.Context.Arch.ToAPK())
-		ctx.Logger.Printf("generating apk index from packages in %s", packageDir)
+		c.Logger.Printf("generating apk index from packages in %s", packageDir)
 
 		var apkFiles []string
-		pkgFileName := fmt.Sprintf("%s-%s-r%d.apk", ctx.Configuration.Package.Name, ctx.Configuration.Package.Version, ctx.Configuration.Package.Epoch)
+		pkgFileName := fmt.Sprintf("%s-%s-r%d.apk", c.Configuration.Package.Name, c.Configuration.Package.Version, c.Configuration.Package.Epoch)
 		apkFiles = append(apkFiles, filepath.Join(packageDir, pkgFileName))
 
-		for _, subpkg := range ctx.Configuration.Subpackages {
+		for _, subpkg := range c.Configuration.Subpackages {
 			pctx.Subpackage = &subpkg
 
 			result, err := subpkg.ShouldRun(&pctx)
@@ -1736,21 +1749,21 @@ func (ctx *Context) BuildPackage() error {
 				continue
 			}
 
-			subpkgFileName := fmt.Sprintf("%s-%s-r%d.apk", subpkg.Name, ctx.Configuration.Package.Version, ctx.Configuration.Package.Epoch)
+			subpkgFileName := fmt.Sprintf("%s-%s-r%d.apk", subpkg.Name, c.Configuration.Package.Version, c.Configuration.Package.Epoch)
 			apkFiles = append(apkFiles, filepath.Join(packageDir, subpkgFileName))
 		}
 
 		opts := []index.Option{
 			index.WithPackageFiles(apkFiles),
-			index.WithSigningKey(ctx.SigningKey),
+			index.WithSigningKey(c.SigningKey),
 			index.WithMergeIndexFileFlag(true),
 			index.WithIndexFile(filepath.Join(packageDir, "APKINDEX.tar.gz")),
 		}
 
-		if ctx, err := index.New(opts...); err != nil {
-			return fmt.Errorf("unable to create index ctx: %w", err)
+		if c, err := index.New(opts...); err != nil {
+			return fmt.Errorf("unable to create index c: %w", err)
 		} else {
-			if err := ctx.GenerateIndex(); err != nil {
+			if err := c.GenerateIndex(ctx); err != nil {
 				return fmt.Errorf("unable to generate index: %w", err)
 			}
 		}
@@ -1759,24 +1772,24 @@ func (ctx *Context) BuildPackage() error {
 	return nil
 }
 
-func (ctx *Context) SummarizePaths() {
-	ctx.Logger.Printf("  workspace dir: %s", ctx.WorkspaceDir)
+func (c *Context) SummarizePaths() {
+	c.Logger.Printf("  workspace dir: %s", c.WorkspaceDir)
 
-	if ctx.GuestDir != "" {
-		ctx.Logger.Printf("  guest dir: %s", ctx.GuestDir)
+	if c.GuestDir != "" {
+		c.Logger.Printf("  guest dir: %s", c.GuestDir)
 	}
 }
 
-func (ctx *Context) Summarize() {
-	ctx.Logger.Printf("melange is building:")
-	ctx.Logger.Printf("  configuration file: %s", ctx.ConfigFile)
-	ctx.SummarizePaths()
+func (c *Context) Summarize() {
+	c.Logger.Printf("melange is building:")
+	c.Logger.Printf("  configuration file: %s", c.ConfigFile)
+	c.SummarizePaths()
 }
 
 // BuildFlavor determines if a build context uses glibc or musl, it returns
 // "gnu" for GNU systems, and "musl" for musl systems.
-func (ctx *Context) BuildFlavor() string {
-	matches, err := filepath.Glob(filepath.Join(ctx.GuestDir, "lib*", "libc.so.6"))
+func (c *Context) BuildFlavor() string {
+	matches, err := filepath.Glob(filepath.Join(c.GuestDir, "lib*", "libc.so.6"))
 	if err != nil || len(matches) == 0 {
 		return "musl"
 	}
@@ -1786,36 +1799,36 @@ func (ctx *Context) BuildFlavor() string {
 
 // BuildTripletGnu returns the GNU autoconf build triplet, for example
 // `x86_64-pc-linux-gnu`.
-func (ctx *Context) BuildTripletGnu() string {
-	return ctx.Arch.ToTriplet(ctx.BuildFlavor())
+func (c *Context) BuildTripletGnu() string {
+	return c.Arch.ToTriplet(c.BuildFlavor())
 }
 
 // BuildTripletRust returns the Rust/Cargo build triplet, for example
 // `x86_64-unknown-linux-gnu`.
-func (ctx *Context) BuildTripletRust() string {
-	return ctx.Arch.ToRustTriplet(ctx.BuildFlavor())
+func (c *Context) BuildTripletRust() string {
+	return c.Arch.ToRustTriplet(c.BuildFlavor())
 }
 
-func (ctx *Context) buildWorkspaceConfig() *container.Config {
-	if ctx.IsBuildLess() {
+func (c *Context) buildWorkspaceConfig() *container.Config {
+	if c.IsBuildLess() {
 		return &container.Config{}
 	}
 
 	mounts := []container.BindMount{
-		{Source: ctx.WorkspaceDir, Destination: "/home/build"},
+		{Source: c.WorkspaceDir, Destination: "/home/build"},
 		{Source: "/etc/resolv.conf", Destination: "/etc/resolv.conf"},
 	}
 
-	if ctx.CacheDir != "" {
-		if fi, err := os.Stat(ctx.CacheDir); err == nil && fi.IsDir() {
-			mountSource, err := realpath.Realpath(ctx.CacheDir)
+	if c.CacheDir != "" {
+		if fi, err := os.Stat(c.CacheDir); err == nil && fi.IsDir() {
+			mountSource, err := realpath.Realpath(c.CacheDir)
 			if err != nil {
-				ctx.Logger.Printf("could not resolve path for --cache-dir: %s", err)
+				c.Logger.Printf("could not resolve path for --cache-dir: %s", err)
 			}
 
 			mounts = append(mounts, container.BindMount{Source: mountSource, Destination: "/var/cache/melange"})
 		} else {
-			ctx.Logger.Printf("--cache-dir %s not a dir; skipping", ctx.CacheDir)
+			c.Logger.Printf("--cache-dir %s not a dir; skipping", c.CacheDir)
 		}
 	}
 
@@ -1827,27 +1840,27 @@ func (ctx *Context) buildWorkspaceConfig() *container.Config {
 	cfg := container.Config{
 		Mounts:       mounts,
 		Capabilities: caps,
-		Logger:       ctx.Logger,
+		Logger:       c.Logger,
 		Environment: map[string]string{
-			"SOURCE_DATE_EPOCH": fmt.Sprintf("%d", ctx.SourceDateEpoch.Unix()),
+			"SOURCE_DATE_EPOCH": fmt.Sprintf("%d", c.SourceDateEpoch.Unix()),
 		},
 	}
 
-	for k, v := range ctx.Configuration.Environment.Environment {
+	for k, v := range c.Configuration.Environment.Environment {
 		cfg.Environment[k] = v
 	}
 
-	cfg.ImgRef = ctx.imgRef
-	ctx.Logger.Printf("ImgRef = %s", cfg.ImgRef)
+	cfg.ImgRef = c.imgRef
+	c.Logger.Printf("ImgRef = %s", cfg.ImgRef)
 
 	return &cfg
 }
 
-func (ctx *Context) WorkspaceConfig() *container.Config {
-	if ctx.containerConfig != nil {
-		return ctx.containerConfig
+func (c *Context) WorkspaceConfig() *container.Config {
+	if c.containerConfig != nil {
+		return c.containerConfig
 	}
 
-	ctx.containerConfig = ctx.buildWorkspaceConfig()
-	return ctx.containerConfig
+	c.containerConfig = c.buildWorkspaceConfig()
+	return c.containerConfig
 }

@@ -15,6 +15,7 @@
 package build
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"os"
@@ -248,21 +249,21 @@ func (p *Pipeline) dumpWith() {
 	}
 }
 
-func (p *Pipeline) evalUse(ctx *PipelineContext) error {
-	sp, err := NewPipeline(ctx)
+func (p *Pipeline) evalUse(ctx context.Context, pc *PipelineContext) error {
+	sp, err := NewPipeline(pc)
 	if err != nil {
 		return err
 	}
 	sp.WorkDir = p.WorkDir
 
-	if err := sp.loadUse(ctx, p.Uses, p.With); err != nil {
+	if err := sp.loadUse(pc, p.Uses, p.With); err != nil {
 		return err
 	}
 
 	p.logger.Printf("  using %s", p.Uses)
 	sp.dumpWith()
 
-	ran, err := sp.Run(ctx)
+	ran, err := sp.Run(ctx, pc)
 	if err != nil {
 		return err
 	}
@@ -274,9 +275,9 @@ func (p *Pipeline) evalUse(ctx *PipelineContext) error {
 	return nil
 }
 
-func (p *Pipeline) evalRun(ctx *PipelineContext) error {
+func (p *Pipeline) evalRun(ctx context.Context, pc *PipelineContext) error {
 	var err error
-	p.With, err = MutateWith(ctx, p.With)
+	p.With, err = MutateWith(pc, p.With)
 	if err != nil {
 		return err
 	}
@@ -296,7 +297,7 @@ func (p *Pipeline) evalRun(ctx *PipelineContext) error {
 	}
 
 	debugOption := ' '
-	if ctx.Context.Debug {
+	if pc.Context.Debug {
 		debugOption = 'x'
 	}
 
@@ -308,9 +309,9 @@ cd '%s'
 %s
 exit 0`, debugOption, sysPath, workdir, workdir, workdir, fragment)
 	command := []string{"/bin/sh", "-c", script}
-	config := ctx.Context.WorkspaceConfig()
+	config := pc.Context.WorkspaceConfig()
 
-	if err := ctx.Context.Runner.Run(config, command...); err != nil {
+	if err := pc.Context.Runner.Run(ctx, config, command...); err != nil {
 		return err
 	}
 
@@ -363,17 +364,17 @@ func (p *Pipeline) shouldEvaluateBranch(pctx *PipelineContext) bool {
 	return p.evaluateBranchConditional(pctx)
 }
 
-func (p *Pipeline) evaluateBranch(ctx *PipelineContext) error {
+func (p *Pipeline) evaluateBranch(ctx context.Context, pc *PipelineContext) error {
 	if p.Identity() != "???" {
 		p.logger.Printf("running step %s", p.Identity())
 	}
 
 	if p.Uses != "" {
-		return p.evalUse(ctx)
+		return p.evalUse(ctx, pc)
 	}
 
 	if p.Runs != "" {
-		return p.evalRun(ctx)
+		return p.evalRun(ctx, pc)
 	}
 
 	return nil
@@ -387,19 +388,19 @@ func (p *Pipeline) checkAssertions(ctx *PipelineContext) error {
 	return nil
 }
 
-func (p *Pipeline) Run(ctx *PipelineContext) (bool, error) {
-	if p.Label != "" && p.Label == ctx.Context.BreakpointLabel {
+func (p *Pipeline) Run(ctx context.Context, pc *PipelineContext) (bool, error) {
+	if p.Label != "" && p.Label == pc.Context.BreakpointLabel {
 		return false, fmt.Errorf("stopping execution at breakpoint: %s", p.Label)
 	}
 
 	if p.logger == nil {
-		if err := p.initializeFromContext(ctx); err != nil {
+		if err := p.initializeFromContext(pc); err != nil {
 			return false, err
 		}
 	}
 
-	if p.shouldEvaluateBranch(ctx) {
-		if err := p.evaluateBranch(ctx); err != nil {
+	if p.shouldEvaluateBranch(pc) {
+		if err := p.evaluateBranch(ctx, pc); err != nil {
 			return false, err
 		}
 	} else {
@@ -411,7 +412,7 @@ func (p *Pipeline) Run(ctx *PipelineContext) (bool, error) {
 			sp.WorkDir = p.WorkDir
 		}
 
-		ran, err := sp.Run(ctx)
+		ran, err := sp.Run(ctx, pc)
 
 		if err != nil {
 			return false, err
@@ -422,7 +423,7 @@ func (p *Pipeline) Run(ctx *PipelineContext) (bool, error) {
 		}
 	}
 
-	if err := p.checkAssertions(ctx); err != nil {
+	if err := p.checkAssertions(pc); err != nil {
 		return false, err
 	}
 
