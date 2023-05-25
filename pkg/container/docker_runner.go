@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"chainguard.dev/apko/pkg/log"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	apko_build "chainguard.dev/apko/pkg/build"
 	apko_oci "chainguard.dev/apko/pkg/build/oci"
@@ -33,6 +34,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	image_spec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -255,11 +258,10 @@ func (d *docker) WorkspaceTar(ctx context.Context, cfg *Config) (io.ReadCloser, 
 
 type dockerLoader struct{}
 
-func (d dockerLoader) LoadImage(ctx context.Context, layerTarGZ string, arch apko_types.Architecture, bc *apko_build.Context) (ref string, err error) {
-	cctx := context.Background()
-	dig, _, err := apko_oci.PublishImageFromLayer(cctx,
-		layerTarGZ, bc.ImageConfiguration, bc.Options.SourceDateEpoch, arch,
-		bc.Logger(), bc.Options.SBOMPath, bc.Options.SBOMFormats, true, true, "melange:latest")
+func (d dockerLoader) LoadImage(ctx context.Context, layerTarGZ string, layer v1.Layer, arch apko_types.Architecture, bc *apko_build.Context) (ref string, err error) {
+	dig, _, err := apko_oci.PublishImageFromLayer(ctx,
+		layer, bc.ImageConfiguration, bc.Options.SourceDateEpoch, arch,
+		bc.Logger(), bc.Options.SBOMPath, bc.Options.SBOMFormats, true, true, []remote.Option{remote.WithContext(ctx), remote.WithTransport(otelhttp.NewTransport(remote.DefaultTransport))}, "melange:latest")
 	if err != nil {
 		return "", err
 	}

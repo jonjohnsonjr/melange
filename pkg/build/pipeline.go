@@ -25,6 +25,9 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"gopkg.in/yaml.v3"
 
@@ -389,6 +392,16 @@ func (p *Pipeline) checkAssertions(ctx *PipelineContext) error {
 }
 
 func (p *Pipeline) Run(ctx context.Context, pc *PipelineContext) (bool, error) {
+	attr := []attribute.KeyValue{attribute.String("package", pc.Package.Name)}
+	if pc.Subpackage != nil {
+		attr = append(attr, attribute.String("subpackage", pc.Subpackage.Name))
+	}
+	if p.Name != "" {
+		attr = append(attr, attribute.String("pipeline.name", p.Name))
+	}
+	ctx, span := otel.Tracer("").Start(ctx, "Pipline.Run", trace.WithAttributes(attr...))
+	defer span.End()
+
 	if p.Label != "" && p.Label == pc.Context.BreakpointLabel {
 		return false, fmt.Errorf("stopping execution at breakpoint: %s", p.Label)
 	}

@@ -23,6 +23,7 @@ import (
 	apko_build "chainguard.dev/apko/pkg/build"
 	apko_types "chainguard.dev/apko/pkg/build/types"
 	"chainguard.dev/apko/pkg/log"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 type Runner interface {
@@ -44,7 +45,7 @@ type Runner interface {
 }
 
 type Loader interface {
-	LoadImage(ctx context.Context, layerTarGZ string, arch apko_types.Architecture, bc *apko_build.Context) (ref string, err error)
+	LoadImage(ctx context.Context, layerTarGZ string, layer v1.Layer, arch apko_types.Architecture, bc *apko_build.Context) (ref string, err error)
 }
 
 // GetRunner returns the requested runner implementation.

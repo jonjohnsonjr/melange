@@ -27,8 +27,8 @@ import (
 	apko_build "chainguard.dev/apko/pkg/build"
 	apko_types "chainguard.dev/apko/pkg/build/types"
 	"chainguard.dev/apko/pkg/log"
-	apko_tarball "chainguard.dev/apko/pkg/tarball"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	apko_tarball "github.com/chainguard-dev/go-apk/pkg/tarball"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 const BubblewrapName = "bubblewrap"
@@ -133,16 +133,12 @@ func (bw *bubblewrap) WorkspaceTar(ctx context.Context, cfg *Config) (io.ReadClo
 type bubblewrapOCILoader struct {
 }
 
-func (b bubblewrapOCILoader) LoadImage(ctx context.Context, layerTarGZ string, arch apko_types.Architecture, bc *apko_build.Context) (ref string, err error) {
+func (b bubblewrapOCILoader) LoadImage(ctx context.Context, layerTarGZ string, layer v1.Layer, arch apko_types.Architecture, bc *apko_build.Context) (ref string, err error) {
 	// bubblewrap does not have the idea of container images or layers or such, just
 	// straight out chroot, so we create the guest dir
 	guestDir, err := os.MkdirTemp("", "melange-guest-*")
 	if err != nil {
 		return ref, fmt.Errorf("failed to create guest dir: %w", err)
-	}
-	layer, err := tarball.LayerFromFile(layerTarGZ)
-	if err != nil {
-		return ref, fmt.Errorf("failed to open layer tarball %s: %w", layerTarGZ, err)
 	}
 	rc, err := layer.Uncompressed()
 	if err != nil {
