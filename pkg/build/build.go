@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	apko_build "chainguard.dev/apko/pkg/build"
@@ -898,7 +899,17 @@ func WithVarsFileForParsing(path string) ConfigurationParsingOption {
 	}
 }
 
-func detectCommit(dirPath string, logger apko_log.Logger) string {
+var commitCache sync.Map
+
+func detectCommit(dirPath string, logger apko_log.Logger) (s string) {
+	if s, ok := commitCache.Load(dirPath); ok {
+		return s.(string)
+	}
+
+	defer func() {
+		commitCache.Store(dirPath, s)
+	}()
+
 	// Best-effort detection of current commit, to be used when not specified in the config file
 
 	// TODO: figure out how to use an abstract FS
