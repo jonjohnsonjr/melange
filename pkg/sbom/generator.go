@@ -20,6 +20,8 @@ import (
 	"log"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func NewGenerator() (*Generator, error) {
@@ -60,7 +62,7 @@ type Generator struct {
 
 // GenerateSBOM runs the main SBOM generation process
 func (g *Generator) GenerateSBOM(ctx context.Context, spec *Spec) error {
-	_, span := otel.Tracer("melange").Start(ctx, "GenerateSBOM")
+	ctx, span := otel.Tracer("melange").Start(ctx, "GenerateSBOM", trace.WithAttributes(attribute.String("path", spec.Path)))
 	defer span.End()
 
 	spec.logger = g.logger

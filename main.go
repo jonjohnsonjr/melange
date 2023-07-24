@@ -15,13 +15,15 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"chainguard.dev/melange/pkg/cli"
+	"github.com/jonjohnsonjr/mane/trace"
 )
 
 func main() {
-	if err := cli.New().Execute(); err != nil {
+	if err := trace.Context(context.Background(), cli.New().ExecuteContext); err != nil {
 		log.Fatalf("error during command execution: %v", err)
 	}
 }

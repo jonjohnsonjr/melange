@@ -26,6 +26,8 @@ import (
 
 	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"gopkg.in/yaml.v3"
 
@@ -390,7 +392,7 @@ func (p *Pipeline) checkAssertions(pb *PipelineBuild) error {
 }
 
 func (p *Pipeline) Run(ctx context.Context, pb *PipelineBuild) (bool, error) {
-	ctx, span := otel.Tracer("melange").Start(ctx, "Pipeline.Run")
+	ctx, span := otel.Tracer("melange").Start(ctx, "Pipeline.Run", trace.WithAttributes(attribute.String("pipeline", p.Identity())))
 	defer span.End()
 
 	if p.Label != "" && p.Label == pb.Build.BreakpointLabel {

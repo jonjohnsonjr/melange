@@ -31,7 +31,7 @@ func New() *cobra.Command {
 		DisableAutoGenTag: true,
 		SilenceUsage:      true,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			http.DefaultTransport = userAgentTransport{http.DefaultTransport}
+			// http.DefaultTransport = userAgentTransport{http.DefaultTransport}
 		},
 	}
 

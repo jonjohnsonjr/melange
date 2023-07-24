@@ -34,6 +34,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/imdario/mergo"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -119,6 +121,9 @@ func (k *k8s) StartPod(ctx context.Context, cfg *Config) error {
 	k.logger.Infof("created builder pod '%s' with UID '%s'", pod.Name, pod.UID)
 
 	if err := wait.PollUntilContextTimeout(ctx, 10*time.Second, k.Config.StartTimeout, true, func(ctx context.Context) (done bool, err error) {
+		ctx, span := otel.Tracer("melange").Start(ctx, "k8s.poll")
+		defer span.End()
+
 		p, err := podclient.Get(ctx, pod.Name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -229,6 +234,7 @@ func (k *k8s) TestUsability(ctx context.Context) bool {
 
 	response, err := k.clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, ssar, metav1.CreateOptions{})
 	if err != nil {
+		k.logger.Warnf("k8s.TestUsability() = %v", err)
 		return false
 	}
 
@@ -254,7 +260,7 @@ func (k *k8s) OCIImageLoader() Loader {
 
 // Exec runs a command on the pod
 func (k *k8s) Exec(ctx context.Context, podName string, cmd []string, streamOpts remotecommand.StreamOptions) error {
-	ctx, span := otel.Tracer("melange").Start(ctx, "k8s.Exec")
+	ctx, span := otel.Tracer("melange").Start(ctx, "k8s.Exec", trace.WithAttributes(attribute.String("exec", strings.Join(cmd, " "))))
 	defer span.End()
 
 	// The k8s runner has no concept of a "WorkingDir", so we prepend the standard
@@ -299,6 +305,9 @@ cd '%s'
 
 	k.logger.Infof("remote executing command %v", cmd)
 	if err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
+		ctx, span := otel.Tracer("melange").Start(ctx, "k8s.backoff")
+		defer span.End()
+
 		err := executor.StreamWithContext(ctx, streamOpts)
 		switch e := err.(type) {
 		case *exec.CodeExitError, exec.ExitError:
@@ -715,7 +724,7 @@ func (p *retryableTarPipe) initReadFrom(n uint64) {
 		defer p.out.Close()
 		err := p.ReadAt(p.out, n)
 		if err != nil {
-			fmt.Println("failed to read: ", err)
+			p.out.CloseWithError(fmt.Errorf("failed to read: %w", err))
 		}
 	}()
 }
