@@ -46,6 +46,7 @@ func New() *cobra.Command {
 	cmd.AddCommand(Convert())
 	cmd.AddCommand(PackageVersion())
 	cmd.AddCommand(Query())
+	cmd.AddCommand(Scan())
 	cmd.AddCommand(version.Version())
 	return cmd
 }
