@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,129 +40,246 @@ import (
 )
 
 func Scan() *cobra.Command {
+	var (
+		keys []string
+		repo []string
+	)
+
 	cmd := &cobra.Command{
 		Use:     "scan",
 		Short:   "Scan an existing APK to generate .PKGINFO",
 		Example: `melange scan < foo.apk`,
-		Args:    cobra.MinimumNArgs(0),
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return ScanCmd(cmd.Context(), cmd.InOrStdin())
+			return ScanCmd(cmd.Context(), args[0], repo[0])
 		},
 	}
+
+	cmd.Flags().StringSliceVarP(&keys, "keyring-append", "k", []string{}, "path to extra keys to include in the build environment keyring")
+	cmd.Flags().StringSliceVarP(&repo, "repository-append", "r", []string{}, "path to extra repositories to include in the build environment")
+
 	return cmd
 }
 
-func ScanCmd(ctx context.Context, in io.Reader) error {
+func ScanCmd(ctx context.Context, file string, repo string) error {
 	ctx, span := otel.Tracer("melange").Start(ctx, "ScanCmd")
 	defer span.End()
 
-	// 1. Parse control section.
-	// 2. Generate config.Package.
-	// 3. Create build.PackageBuild.
-	// 4. Set size
-	// 5. Set hash
-	// 6. Call GenerateControlData
+	// TODO: Flags, probably.
+	archs := []string{"aarch64"}
 
-	zr, err := gzip.NewReader(in)
-	if err != nil {
-		return fmt.Errorf("gzip: %w", err)
-	}
-	tr := tar.NewReader(zr)
-
-	info, b, err := findPkgInfo(tr)
-	if err != nil {
-		return fmt.Errorf("findPkgInfo: %w", err)
-	}
-
-	version, epoch := versionEpoch(info.pkgver)
-
-	pkgConfig := config.Package{
-		Name:        info.pkgname,
-		Version:     version,
-		Epoch:       epoch,
-		Description: info.pkgdesc,
-		URL:         info.url,
-		Commit:      info.commit,
-		Copyright:   []config.Copyright{{License: info.license}},
-	}
-	if len(info.triggers) != 0 {
-		pkgConfig.Scriptlets = config.Scriptlets{}
-		pkgConfig.Scriptlets.Trigger.Paths = []string{info.triggers}
-	}
-
-	pkg, err := build.NewPackageContext(&pkgConfig)
-	if err != nil {
-		return err
-	}
-
-	installedSize, err := strconv.ParseInt(info.size, 10, 64)
-	if err != nil {
-		return err
-	}
-
-	logger := &apko_log.Adapter{
-		Out:   os.Stderr,
-		Level: apko_log.InfoLevel,
-	}
-
-	dir, err := os.MkdirTemp("", "")
-	if err != nil {
-		return fmt.Errorf("mkdirtemp: %w", err)
-	}
-	defer os.RemoveAll(dir)
-
-	logger.Printf("dir: %s", dir)
-
-	pb := build.PackageBuild{
-		Build: &build.Build{
-			WorkspaceDir: dir,
-		},
-		Origin:        pkg,
-		PackageName:   pkg.Package.Name,
-		OriginName:    pkg.Package.Name,
-		Dependencies:  pkg.Package.Dependencies,
-		Options:       pkg.Package.Options,
-		Scriptlets:    pkg.Package.Scriptlets,
-		Description:   pkg.Package.Description,
-		URL:           pkg.Package.URL,
-		Commit:        pkg.Package.Commit,
-		InstalledSize: installedSize,
-		DataHash:      info.datahash,
-		Arch:          info.arch,
-		Logger:        logger,
-	}
-
-	if info.builddate != "" {
-		sec, err := strconv.ParseInt(info.builddate, 10, 64)
+	for _, arch := range archs {
+		// TODO: Also handle subpackages.
+		cfg, err := config.ParseConfiguration(file)
 		if err != nil {
-			return fmt.Errorf("parsing %q as timestamp: %w", info.builddate, err)
+			return fmt.Errorf("parse config: %w", err)
 		}
-		pb.Build.SourceDateEpoch = time.Unix(sec, 0)
-	}
 
-	subdir := pb.WorkspaceSubdir()
-	if err := os.MkdirAll(subdir, 0o755); err != nil {
-		return fmt.Errorf("unable to ensure workspace exists: %w", err)
-	}
+		pkgConfig := cfg.Package
 
-	if err := writeToDir(subdir, tr); err != nil {
-		return fmt.Errorf("writeToDir: %w", err)
-	}
+		u := fmt.Sprintf("%s/%s/%s-%s-r%d.apk", repo, arch, pkgConfig.Name, pkgConfig.Version, pkgConfig.Epoch)
+		resp, err := http.Get(u)
+		if err != nil {
+			return fmt.Errorf("get %s: %w", u, err)
+		}
+		zr, err := gzip.NewReader(bufio.NewReaderSize(resp.Body, 1<<20))
+		if err != nil {
+			return fmt.Errorf("gzip %q: %w", u, err)
+		}
+		tr := tar.NewReader(zr)
 
-	if err := pb.GenerateDependencies(); err != nil {
-		return err
-	}
+		info, b, err := findPkgInfo(tr)
+		if err != nil {
+			return fmt.Errorf("findPkgInfo: %w", err)
+		}
 
-	var buf bytes.Buffer
-	if err := pb.GenerateControlData(&buf); err != nil {
-		return fmt.Errorf("unable to process control template: %w", err)
-	}
+		// TODO: Is this right?
+		pkgConfig.Commit = info.commit
 
-	generated := buf.Bytes()
+		pkg, err := build.NewPackageContext(&pkgConfig)
+		if err != nil {
+			return err
+		}
 
-	if !bytes.Equal(b, generated) {
-		if _, err := os.Stdout.Write(Diff("old", b, "new", generated)); err != nil {
-			return fmt.Errorf("write: %w", err)
+		installedSize, err := strconv.ParseInt(info.size, 10, 64)
+		if err != nil {
+			return err
+		}
+
+		logger := &apko_log.Adapter{
+			Out:   io.Discard,
+			Level: apko_log.InfoLevel,
+		}
+
+		dir, err := os.MkdirTemp("", info.pkgname)
+		if err != nil {
+			return fmt.Errorf("mkdirtemp: %w", err)
+		}
+		defer os.RemoveAll(dir)
+
+		logger.Printf("dir: %s", dir)
+
+		pb := build.PackageBuild{
+			Build: &build.Build{
+				WorkspaceDir:    dir,
+				SourceDateEpoch: time.Unix(0, 0),
+			},
+			Origin:        pkg,
+			PackageName:   pkg.Package.Name,
+			OriginName:    pkg.Package.Name,
+			Dependencies:  pkg.Package.Dependencies,
+			Options:       pkg.Package.Options,
+			Scriptlets:    pkg.Package.Scriptlets,
+			Description:   pkg.Package.Description,
+			URL:           pkg.Package.URL,
+			Commit:        pkg.Package.Commit,
+			InstalledSize: installedSize,
+			DataHash:      info.datahash,
+			Arch:          info.arch,
+			Logger:        logger,
+		}
+
+		if info.builddate != "" {
+			sec, err := strconv.ParseInt(info.builddate, 10, 64)
+			if err != nil {
+				return fmt.Errorf("parsing %q as timestamp: %w", info.builddate, err)
+			}
+			pb.Build.SourceDateEpoch = time.Unix(sec, 0)
+		}
+
+		subdir := pb.WorkspaceSubdir()
+		if err := os.MkdirAll(subdir, 0o755); err != nil {
+			return fmt.Errorf("unable to ensure workspace exists: %w", err)
+		}
+
+		if err := writeToDir(subdir, tr); err != nil {
+			return fmt.Errorf("writeToDir: %w", err)
+		}
+
+		if err := pb.GenerateDependencies(); err != nil {
+			return err
+		}
+
+		var buf bytes.Buffer
+		if err := pb.GenerateControlData(&buf); err != nil {
+			return fmt.Errorf("unable to process control template: %w", err)
+		}
+
+		generated := buf.Bytes()
+
+		old := fmt.Sprintf("%s-%s.apk", info.pkgname, info.pkgver)
+		diff := Diff(old, b, file, generated)
+		if diff != nil {
+			if _, err := os.Stdout.Write(diff); err != nil {
+				return fmt.Errorf("write: %w", err)
+			}
+		}
+
+		for _, subpkg := range cfg.Subpackages {
+			subpkgConfig := subpkg
+
+			u := fmt.Sprintf("%s/%s/%s-%s-r%d.apk", repo, arch, subpkgConfig.Name, pkgConfig.Version, pkgConfig.Epoch)
+			resp, err := http.Get(u)
+			if err != nil {
+				return fmt.Errorf("get %s: %w", u, err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("Get %s: %d", u, resp.StatusCode)
+				continue
+			}
+
+			zr, err := gzip.NewReader(bufio.NewReaderSize(resp.Body, 1<<20))
+			if err != nil {
+				return fmt.Errorf("gzip %q: %w", u, err)
+			}
+			tr := tar.NewReader(zr)
+
+			info, b, err := findPkgInfo(tr)
+			if err != nil {
+				return fmt.Errorf("findPkgInfo: %w", err)
+			}
+
+			// TODO: Is this right?
+			subpkgConfig.Commit = info.commit
+
+			subpkg, err := build.NewSubpackageContext(&subpkgConfig)
+			if err != nil {
+				return err
+			}
+
+			installedSize, err := strconv.ParseInt(info.size, 10, 64)
+			if err != nil {
+				return err
+			}
+
+			logger := &apko_log.Adapter{
+				Out:   io.Discard,
+				Level: apko_log.InfoLevel,
+			}
+
+			dir, err := os.MkdirTemp("", info.pkgname)
+			if err != nil {
+				return fmt.Errorf("mkdirtemp: %w", err)
+			}
+			defer os.RemoveAll(dir)
+
+			logger.Printf("dir: %s", dir)
+
+			pb := build.PackageBuild{
+				Build: &build.Build{
+					WorkspaceDir:    dir,
+					SourceDateEpoch: time.Unix(0, 0),
+				},
+				Origin:        pkg,
+				PackageName:   subpkg.Subpackage.Name,
+				OriginName:    pkg.Package.Name,
+				Dependencies:  subpkg.Subpackage.Dependencies,
+				Options:       subpkg.Subpackage.Options,
+				Scriptlets:    subpkg.Subpackage.Scriptlets,
+				Description:   subpkg.Subpackage.Description,
+				URL:           subpkg.Subpackage.URL,
+				Commit:        subpkg.Subpackage.Commit,
+				InstalledSize: installedSize,
+				DataHash:      info.datahash,
+				Arch:          info.arch,
+				Logger:        logger,
+			}
+
+			if info.builddate != "" {
+				sec, err := strconv.ParseInt(info.builddate, 10, 64)
+				if err != nil {
+					return fmt.Errorf("parsing %q as timestamp: %w", info.builddate, err)
+				}
+				pb.Build.SourceDateEpoch = time.Unix(sec, 0)
+			}
+
+			subdir := pb.WorkspaceSubdir()
+			if err := os.MkdirAll(subdir, 0o755); err != nil {
+				return fmt.Errorf("unable to ensure workspace exists: %w", err)
+			}
+
+			if err := writeToDir(subdir, tr); err != nil {
+				return fmt.Errorf("writeToDir: %w", err)
+			}
+
+			if err := pb.GenerateDependencies(); err != nil {
+				return err
+			}
+
+			var buf bytes.Buffer
+			if err := pb.GenerateControlData(&buf); err != nil {
+				return fmt.Errorf("unable to process control template: %w", err)
+			}
+
+			generated := buf.Bytes()
+
+			old := fmt.Sprintf("%s-%s.apk", info.pkgname, info.pkgver)
+			diff := Diff(old, b, file, generated)
+			if diff != nil {
+				if _, err := os.Stdout.Write(diff); err != nil {
+					return fmt.Errorf("write: %w", err)
+				}
+			}
 		}
 	}
 
@@ -275,33 +394,17 @@ func versionEpoch(in string) (string, uint64) {
 func writeToDir(dst string, tr *tar.Reader) error {
 	for {
 		header, err := tr.Next()
-
-		switch {
-
-		// if no more files are found return
-		case err == io.EOF:
-			return nil
-
-		// return any other error
-		case err != nil:
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
 			return err
-
-		// if the header is nil, just skip it (not sure how this happens)
-		case header == nil:
-			continue
 		}
 
-		// the target location where the dir/file should be created
 		target := filepath.Join(dst, header.Name)
 
-		// the following switch could also be done using fi.Mode(), not sure if there
-		// a benefit of using one vs. the other.
-		// fi := header.FileInfo()
-
-		// check the file type
 		switch header.Typeflag {
 
-		// if its a dir and it doesn't exist create it
 		case tar.TypeDir:
 			if _, err := os.Stat(target); err != nil {
 				if err := os.MkdirAll(target, 0755); err != nil {
@@ -309,7 +412,6 @@ func writeToDir(dst string, tr *tar.Reader) error {
 				}
 			}
 
-		// if it's a file create it
 		case tar.TypeReg:
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
 			if err != nil {
@@ -321,19 +423,31 @@ func writeToDir(dst string, tr *tar.Reader) error {
 				return err
 			}
 
-			// manually close here after each file operation; defering would cause each file close
-			// to wait until all operations have completed.
-			f.Close()
-		case tar.TypeLink, tar.TypeSymlink:
-			src := filepath.Join(dst, strings.TrimPrefix(header.Linkname, "/"))
-			target := filepath.Join(dst, strings.TrimPrefix(header.Name, "/"))
+			if err := f.Close(); err != nil {
+				return err
+			}
+		case tar.TypeLink:
+			src := filepath.Join(dst, header.Linkname)
+			if err := os.Link(src, target); err != nil {
+				return fmt.Errorf("linking: %w", err)
+			}
+		case tar.TypeSymlink:
+			src := filepath.Join(dst, header.Linkname)
+
+			// Case sensitivity is stupid.
+			if extant, err := os.Readlink(target); err == nil && extant == src {
+				continue
+			}
+
 			if err := os.Symlink(src, target); err != nil {
 				return fmt.Errorf("symlinking: %w", err)
 			}
 		default:
-			return fmt.Errorf("unhandled tar typetype: %v", header.Typeflag)
+			return fmt.Errorf("unhandled tar typeflag: %v", header.Typeflag)
 		}
 	}
+
+	return nil
 }
 
 // From src/internal/diff/diff.go
