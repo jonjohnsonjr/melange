@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -172,113 +171,6 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 		if diff != nil {
 			if _, err := os.Stdout.Write(diff); err != nil {
 				return fmt.Errorf("write: %w", err)
-			}
-		}
-
-		for _, subpkg := range cfg.Subpackages {
-			subpkgConfig := subpkg
-
-			u := fmt.Sprintf("%s/%s/%s-%s-r%d.apk", repo, arch, subpkgConfig.Name, pkgConfig.Version, pkgConfig.Epoch)
-			resp, err := http.Get(u)
-			if err != nil {
-				return fmt.Errorf("get %s: %w", u, err)
-			}
-			if resp.StatusCode != http.StatusOK {
-				log.Printf("Get %s: %d", u, resp.StatusCode)
-				continue
-			}
-
-			zr, err := gzip.NewReader(bufio.NewReaderSize(resp.Body, 1<<20))
-			if err != nil {
-				return fmt.Errorf("gzip %q: %w", u, err)
-			}
-			tr := tar.NewReader(zr)
-
-			info, b, err := findPkgInfo(tr)
-			if err != nil {
-				return fmt.Errorf("findPkgInfo: %w", err)
-			}
-
-			// TODO: Is this right?
-			subpkgConfig.Commit = info.commit
-
-			subpkg, err := build.NewSubpackageContext(&subpkgConfig)
-			if err != nil {
-				return err
-			}
-
-			installedSize, err := strconv.ParseInt(info.size, 10, 64)
-			if err != nil {
-				return err
-			}
-
-			logger := &apko_log.Adapter{
-				Out:   io.Discard,
-				Level: apko_log.InfoLevel,
-			}
-
-			dir, err := os.MkdirTemp("", info.pkgname)
-			if err != nil {
-				return fmt.Errorf("mkdirtemp: %w", err)
-			}
-			defer os.RemoveAll(dir)
-
-			logger.Printf("dir: %s", dir)
-
-			pb := build.PackageBuild{
-				Build: &build.Build{
-					WorkspaceDir:    dir,
-					SourceDateEpoch: time.Unix(0, 0),
-				},
-				Origin:        pkg,
-				PackageName:   subpkg.Subpackage.Name,
-				OriginName:    pkg.Package.Name,
-				Dependencies:  subpkg.Subpackage.Dependencies,
-				Options:       subpkg.Subpackage.Options,
-				Scriptlets:    subpkg.Subpackage.Scriptlets,
-				Description:   subpkg.Subpackage.Description,
-				URL:           subpkg.Subpackage.URL,
-				Commit:        subpkg.Subpackage.Commit,
-				InstalledSize: installedSize,
-				DataHash:      info.datahash,
-				Arch:          info.arch,
-				Logger:        logger,
-			}
-
-			if info.builddate != "" {
-				sec, err := strconv.ParseInt(info.builddate, 10, 64)
-				if err != nil {
-					return fmt.Errorf("parsing %q as timestamp: %w", info.builddate, err)
-				}
-				pb.Build.SourceDateEpoch = time.Unix(sec, 0)
-			}
-
-			subdir := pb.WorkspaceSubdir()
-			if err := os.MkdirAll(subdir, 0o755); err != nil {
-				return fmt.Errorf("unable to ensure workspace exists: %w", err)
-			}
-
-			if err := writeToDir(subdir, tr); err != nil {
-				return fmt.Errorf("writeToDir: %w", err)
-			}
-
-			if err := pb.GenerateDependencies(); err != nil {
-				return err
-			}
-
-			var buf bytes.Buffer
-			if err := pb.GenerateControlData(&buf); err != nil {
-				return fmt.Errorf("unable to process control template: %w", err)
-			}
-
-			generated := buf.Bytes()
-
-			old := fmt.Sprintf("%s-%s.apk", info.pkgname, info.pkgver)
-			diff := Diff(old, b, file, generated)
-			if diff != nil {
-				if _, err := os.Stdout.Write(diff); err != nil {
-					return fmt.Errorf("write: %w", err)
-				}
 			}
 		}
 	}
