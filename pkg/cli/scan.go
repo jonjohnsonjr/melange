@@ -180,6 +180,7 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 
 		subpkgs := map[string]build.PackageBuild{}
 		controls := map[string][]byte{}
+		infos := map[string]*pkginfo{}
 
 		for _, subpkg := range cfg.Subpackages {
 			logger.Printf("subpackage %q", subpkg.Name)
@@ -207,6 +208,7 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 				return fmt.Errorf("findPkgInfo: %w", err)
 			}
 
+			infos[subpkgConfig.Name] = info
 			controls[subpkgConfig.Name] = b
 
 			// TODO: Is this right?
@@ -270,6 +272,7 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 				continue
 			}
 			b := controls[subpkg.Name]
+			info := infos[subpkg.Name]
 
 			if err := pb.GenerateDependencies(); err != nil {
 				return err
