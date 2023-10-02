@@ -159,25 +159,6 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 			return fmt.Errorf("writeToDir: %w", err)
 		}
 
-		if err := pb.GenerateDependencies(); err != nil {
-			return err
-		}
-
-		var buf bytes.Buffer
-		if err := pb.GenerateControlData(&buf); err != nil {
-			return fmt.Errorf("unable to process control template: %w", err)
-		}
-
-		generated := buf.Bytes()
-
-		old := fmt.Sprintf("%s-%s.apk", info.pkgname, info.pkgver)
-		diff := Diff(old, b, file, generated)
-		if diff != nil {
-			if _, err := os.Stdout.Write(diff); err != nil {
-				return fmt.Errorf("write: %w", err)
-			}
-		}
-
 		subpkgs := map[string]build.PackageBuild{}
 		controls := map[string][]byte{}
 		infos := map[string]*pkginfo{}
@@ -291,6 +272,25 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 				if _, err := os.Stdout.Write(diff); err != nil {
 					return fmt.Errorf("write: %w", err)
 				}
+			}
+		}
+
+		if err := pb.GenerateDependencies(); err != nil {
+			return err
+		}
+
+		var buf bytes.Buffer
+		if err := pb.GenerateControlData(&buf); err != nil {
+			return fmt.Errorf("unable to process control template: %w", err)
+		}
+
+		generated := buf.Bytes()
+
+		old := fmt.Sprintf("%s-%s.apk", info.pkgname, info.pkgver)
+		diff := Diff(old, b, file, generated)
+		if diff != nil {
+			if _, err := os.Stdout.Write(diff); err != nil {
+				return fmt.Errorf("write: %w", err)
 			}
 		}
 	}
