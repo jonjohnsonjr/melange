@@ -445,6 +445,9 @@ func writeToDir(dst string, tr *tar.Reader) error {
 			}
 		case tar.TypeSymlink:
 			src := filepath.Join(dst, header.Linkname)
+			if !strings.HasPrefix(header.Linkname, "/") {
+				src = filepath.Join(filepath.Dir(target), header.Linkname)
+			}
 
 			// Case sensitivity is stupid.
 			if extant, err := os.Readlink(target); err == nil && extant == src {
