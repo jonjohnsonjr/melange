@@ -246,7 +246,10 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 		}
 
 		for _, subpkg := range cfg.Subpackages {
-			pb := subpkgs[subpkg.Name]
+			pb, ok := subpkgs[subpkg.Name]
+			if !ok {
+				continue
+			}
 			b := controls[subpkg.Name]
 
 			if err := pb.GenerateDependencies(); err != nil {
