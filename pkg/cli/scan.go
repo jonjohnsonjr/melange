@@ -119,11 +119,14 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 
 		logger.Printf("dir: %s", dir)
 
+		bb := &build.Build{
+			WorkspaceDir:    dir,
+			SourceDateEpoch: time.Unix(0, 0),
+			Configuration:   *cfg,
+		}
+
 		pb := build.PackageBuild{
-			Build: &build.Build{
-				WorkspaceDir:    dir,
-				SourceDateEpoch: time.Unix(0, 0),
-			},
+			Build:         bb,
 			Origin:        pkg,
 			PackageName:   pkg.Package.Name,
 			OriginName:    pkg.Package.Name,
@@ -217,19 +220,8 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 				Level: apko_log.InfoLevel,
 			}
 
-			dir, err := os.MkdirTemp("", info.pkgname)
-			if err != nil {
-				return fmt.Errorf("mkdirtemp: %w", err)
-			}
-			defer os.RemoveAll(dir)
-
-			logger.Printf("dir: %s", dir)
-
 			pb := build.PackageBuild{
-				Build: &build.Build{
-					WorkspaceDir:    dir,
-					SourceDateEpoch: time.Unix(0, 0),
-				},
+				Build:         bb,
 				Origin:        pkg,
 				PackageName:   subpkg.Subpackage.Name,
 				OriginName:    pkg.Package.Name,
