@@ -178,7 +178,12 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 			}
 		}
 
+		subpkgs := map[string]build.PackageBuild{}
+		controls := map[string][]byte{}
+
 		for _, subpkg := range cfg.Subpackages {
+			logger.Printf("subpackage %q", subpkg.Name)
+			logger.Printf("pcbcpn: %q", bb.Configuration.Package.Name)
 			subpkgConfig := subpkg
 
 			u := fmt.Sprintf("%s/%s/%s-%s-r%d.apk", repo, arch, subpkgConfig.Name, pkgConfig.Version, pkgConfig.Epoch)
@@ -201,6 +206,8 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 			if err != nil {
 				return fmt.Errorf("findPkgInfo: %w", err)
 			}
+
+			controls[subpkgConfig.Name] = b
 
 			// TODO: Is this right?
 			subpkgConfig.Commit = info.commit
@@ -237,6 +244,8 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 				Logger:        logger,
 			}
 
+			subpkgs[subpkgConfig.Name] = pb
+
 			if info.builddate != "" {
 				sec, err := strconv.ParseInt(info.builddate, 10, 64)
 				if err != nil {
@@ -253,6 +262,11 @@ func ScanCmd(ctx context.Context, file string, repo string) error {
 			if err := writeToDir(subdir, tr); err != nil {
 				return fmt.Errorf("writeToDir: %w", err)
 			}
+		}
+
+		for _, subpkg := range cfg.Subpackages {
+			pb := subpkgs[subpkg.Name]
+			b := controls[subpkg.Name]
 
 			if err := pb.GenerateDependencies(); err != nil {
 				return err

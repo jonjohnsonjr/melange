@@ -421,7 +421,10 @@ func (pc *PackageBuild) dereferenceCrossPackageSymlink(path string) (string, err
 			testPath := filepath.Join(basePath, libDir, realPath)
 
 			if _, err := os.Stat(testPath); err == nil {
+				pc.Logger.Printf("got %q", testPath)
 				return testPath, nil
+			} else {
+				pc.Logger.Printf("deref xpkg %q: %v", testPath, err)
 			}
 		}
 	}
