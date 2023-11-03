@@ -106,12 +106,12 @@ type Package struct {
 	// List of packages to depends on
 	Dependencies Dependencies `json:"dependencies,omitempty" yaml:"dependencies,omitempty"`
 	// Optional: Options that alter the packages behavior
-	Options PackageOption `json:"options,omitempty" yaml:"options,omitempty"`
+	Options *PackageOption `json:"options,omitempty" yaml:"options,omitempty"`
 	// Optional: Executable scripts that run at various stages of the package
 	// lifecycle, triggered by configurable events
-	Scriptlets Scriptlets `json:"scriptlets,omitempty" yaml:"scriptlets,omitempty"`
+	Scriptlets *Scriptlets `json:"scriptlets,omitempty" yaml:"scriptlets,omitempty"`
 	// Optional: enabling, disabling, and configuration of build checks
-	Checks Checks `json:"checks,omitempty" yaml:"checks,omitempty"`
+	Checks *Checks `json:"checks,omitempty" yaml:"checks,omitempty"`
 }
 
 // PackageURL returns the package URL ("purl") for the package. For more
@@ -258,19 +258,19 @@ type Pipeline struct {
 	// Optional: A map of inputs to the pipeline
 	Inputs map[string]Input `json:"inputs,omitempty" yaml:"inputs,omitempty"`
 	// Optional: Configuration to determine any explicit dependencies this pipeline may have
-	Needs Needs `json:"needs,omitempty" yaml:"needs,omitempty"`
+	Needs *Needs `json:"needs,omitempty" yaml:"needs,omitempty"`
 	// Optional: Labels to apply to the pipeline
 	Label string `json:"label,omitempty" yaml:"label,omitempty"`
 	// Optional: A condition to evaluate before running the pipeline
 	If string `json:"if,omitempty" yaml:"if,omitempty"`
 	// Optional: Assertions to evaluate whether the pipeline was successful
-	Assertions PipelineAssertions `json:"assertions,omitempty" yaml:"assertions,omitempty"`
+	Assertions *PipelineAssertions `json:"assertions,omitempty" yaml:"assertions,omitempty"`
 	// Optional: The working directory of the pipeline
 	//
 	// This defaults to the guests' build workspace (/home/build)
 	WorkDir string `json:"working-directory,omitempty" yaml:"working-directory,omitempty"`
 	// Optional: Configuration for the generated SBOM
-	SBOM SBOM `json:"sbom,omitempty" yaml:"sbom,omitempty"`
+	SBOM *SBOM `json:"sbom,omitempty" yaml:"sbom,omitempty"`
 	// Optional: environment variables to override the apko environment
 	Environment map[string]string `json:"environment,omitempty" yaml:"environment,omitempty"`
 }
@@ -287,8 +287,8 @@ type Subpackage struct {
 	// Optional: List of packages to depend on
 	Dependencies Dependencies `json:"dependencies,omitempty" yaml:"dependencies,omitempty"`
 	// Optional: Options that alter the packages behavior
-	Options    PackageOption `json:"options,omitempty" yaml:"options,omitempty"`
-	Scriptlets Scriptlets    `json:"scriptlets,omitempty" yaml:"scriptlets,omitempty"`
+	Options    *PackageOption `json:"options,omitempty" yaml:"options,omitempty"`
+	Scriptlets *Scriptlets    `json:"scriptlets,omitempty" yaml:"scriptlets,omitempty"`
 	// Optional: The human readable description of the subpackage
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 	// Optional: The URL to the package's homepage
@@ -296,7 +296,7 @@ type Subpackage struct {
 	// Optional: The git commit of the subpackage build configuration
 	Commit string `json:"commit,omitempty" yaml:"commit,omitempty"`
 	// Optional: enabling, disabling, and configuration of build checks
-	Checks Checks `json:"checks,omitempty" yaml:"checks,omitempty"`
+	Checks *Checks `json:"checks,omitempty" yaml:"checks,omitempty"`
 }
 
 // PackageURL returns the package URL ("purl") for the subpackage. For more

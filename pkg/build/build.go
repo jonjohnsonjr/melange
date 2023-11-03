@@ -958,14 +958,6 @@ func (b *Build) Lock(ctx context.Context, w io.Writer) error {
 	return json.NewEncoder(w).Encode(b.Configuration)
 }
 
-func (b *Build) Lock(ctx context.Context, w io.Writer) error {
-	if err := b.Compile(); err != nil {
-		return err
-	}
-
-	return json.NewEncoder(w).Encode(b.Configuration)
-}
-
 // 1. Compile to inline pipelines and evaluate all substitutions.
 // 2. Collect transitive dependencies.
 // 3. Build guest container.

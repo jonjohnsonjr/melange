@@ -73,8 +73,8 @@ type PackageBuild struct {
 	Logger        log.Logger
 	Dependencies  config.Dependencies
 	Arch          string
-	Options       config.PackageOption
-	Scriptlets    config.Scriptlets
+	Options       *config.PackageOption
+	Scriptlets    *config.Scriptlets
 	Description   string
 	URL           string
 	Commit        string

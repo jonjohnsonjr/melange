@@ -77,7 +77,10 @@ func (sca *SCABuildInterface) Logger() log.Logger {
 
 // Options returns the configured SCA engine options for the package being built.
 func (sca *SCABuildInterface) Options() config.PackageOption {
-	return sca.PackageBuild.Options
+	if sca.PackageBuild.Options == nil {
+		return config.PackageOption{}
+	}
+	return *sca.PackageBuild.Options
 }
 
 // BaseDependencies returns the base dependencies for the package being built.

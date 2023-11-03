@@ -372,6 +372,10 @@ func (pctx *PipelineContext) evaluateBranch(ctx context.Context, pb *PipelineBui
 }
 
 func (pctx *PipelineContext) checkAssertions(pb *PipelineBuild) error {
+	if pctx.Pipeline.Assertions == nil {
+		return nil
+	}
+
 	if pctx.Pipeline.Assertions.RequiredSteps > 0 && pctx.steps < pctx.Pipeline.Assertions.RequiredSteps {
 		return fmt.Errorf("pipeline did not run the required %d steps, only %d", pctx.Pipeline.Assertions.RequiredSteps, pctx.steps)
 	}
