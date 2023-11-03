@@ -236,6 +236,9 @@ func (b *Build) loadPipeline(pb *PipelineBuild, pipeline *config.Pipeline) error
 		}
 	}
 
+	pipeline.Inputs = nil
+	pipeline.With = nil
+
 	return nil
 }
 
