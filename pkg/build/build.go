@@ -949,6 +949,14 @@ type linterTarget struct {
 	checks  config.Checks
 }
 
+// 1. Compile to inline pipelines and evaluate all substitutions.
+// 2. Collect transitive dependencies.
+// 3. Build guest container.
+// 4. Execute each pipeline.
+// 5. Run linters.
+// 6. Generate SBOMs.
+// 7. Emit package and subpackages.
+// 8. Generate the index.
 func (b *Build) BuildPackage(ctx context.Context) error {
 	ctx, span := otel.Tracer("melange").Start(ctx, "BuildPackage")
 	defer span.End()
