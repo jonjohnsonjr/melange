@@ -207,11 +207,11 @@ func (b *Build) loadPipeline(pb *PipelineBuild, pipeline *config.Pipeline) error
 
 	validated, err := validateWith(with, pipeline.Inputs)
 	if err != nil {
-		return fmt.Errorf("unable to validate pipeline: %w", err)
+		return fmt.Errorf("unable to validate with: %w", err)
 	}
 	pipeline.With, err = MutateWith(pb, validated)
 	if err != nil {
-		return fmt.Errorf("mutating pipeline: %w", err)
+		return fmt.Errorf("mutating with: %w", err)
 	}
 
 	// allow input mutations on needs.packages
@@ -220,6 +220,11 @@ func (b *Build) loadPipeline(pb *PipelineBuild, pipeline *config.Pipeline) error
 		if err != nil {
 			return err
 		}
+	}
+
+	pipeline.Runs, err = util.MutateStringFromMap(pipeline.With, pipeline.Runs)
+	if err != nil {
+		return fmt.Errorf("mutating runs: %w", err)
 	}
 
 	for i := range pipeline.Pipeline {
