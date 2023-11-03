@@ -949,6 +949,38 @@ type linterTarget struct {
 	checks  config.Checks
 }
 
+func (b *Build) compilePipelines(pb *PipelineBuild, ps []config.Pipeline) error {
+	for i := range ps {
+		if err := b.loadPipeline(pb, &ps[i]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (b *Build) Compile() error {
+	cfg := b.Configuration
+	pb := &PipelineBuild{
+		Build:   b,
+		Package: &cfg.Package,
+	}
+
+	if err := b.compilePipelines(pb, cfg.Pipeline); err != nil {
+		return err
+	}
+
+	for _, sp := range cfg.Subpackages {
+		pb.Subpackage = &sp
+
+		if err := b.compilePipelines(pb, sp.Pipeline); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // 1. Compile to inline pipelines and evaluate all substitutions.
 // 2. Collect transitive dependencies.
 // 3. Build guest container.

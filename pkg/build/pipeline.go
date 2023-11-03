@@ -69,7 +69,7 @@ func (pctx *PipelineContext) Identity() string {
 }
 
 func MutateWith(pb *PipelineBuild, with map[string]string) (map[string]string, error) {
-	nw, err := substitutionMap(pb)
+	nw, err := substitutionMap(pb.Build, pb.Package, pb.Subpackage)
 	if err != nil {
 		return nil, err
 	}
@@ -96,23 +96,23 @@ func MutateWith(pb *PipelineBuild, with map[string]string) (map[string]string, e
 	return nw, nil
 }
 
-func substitutionMap(pb *PipelineBuild) (map[string]string, error) {
+func substitutionMap(b *Build, pkg *config.Package, spkg *config.Subpackage) (map[string]string, error) {
 	nw := map[string]string{
-		config.SubstitutionPackageName:          pb.Package.Name,
-		config.SubstitutionPackageVersion:       pb.Package.Version,
-		config.SubstitutionPackageEpoch:         strconv.FormatUint(pb.Package.Epoch, 10),
+		config.SubstitutionPackageName:          pkg.Name,
+		config.SubstitutionPackageVersion:       pkg.Version,
+		config.SubstitutionPackageEpoch:         strconv.FormatUint(pkg.Epoch, 10),
 		config.SubstitutionPackageFullVersion:   fmt.Sprintf("%s-r%s", config.SubstitutionPackageVersion, config.SubstitutionPackageEpoch),
-		config.SubstitutionTargetsDestdir:       fmt.Sprintf("/home/build/melange-out/%s", pb.Package.Name),
-		config.SubstitutionTargetsContextdir:    fmt.Sprintf("/home/build/melange-out/%s", pb.Package.Name),
-		config.SubstitutionHostTripletGnu:       pb.Build.BuildTripletGnu(),
-		config.SubstitutionHostTripletRust:      pb.Build.BuildTripletRust(),
-		config.SubstitutionCrossTripletGnuGlibc: pb.Build.Arch.ToTriplet("gnu"),
-		config.SubstitutionCrossTripletGnuMusl:  pb.Build.Arch.ToTriplet("musl"),
-		config.SubstitutionBuildArch:            pb.Build.Arch.ToAPK(),
+		config.SubstitutionTargetsDestdir:       fmt.Sprintf("/home/build/melange-out/%s", pkg.Name),
+		config.SubstitutionTargetsContextdir:    fmt.Sprintf("/home/build/melange-out/%s", pkg.Name),
+		config.SubstitutionHostTripletGnu:       b.BuildTripletGnu(),
+		config.SubstitutionHostTripletRust:      b.BuildTripletRust(),
+		config.SubstitutionCrossTripletGnuGlibc: b.Arch.ToTriplet("gnu"),
+		config.SubstitutionCrossTripletGnuMusl:  b.Arch.ToTriplet("musl"),
+		config.SubstitutionBuildArch:            b.Arch.ToAPK(),
 	}
 
 	// Retrieve vars from config
-	subst_nw, err := pb.Build.Configuration.GetVarsFromConfig()
+	subst_nw, err := b.Configuration.GetVarsFromConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -122,18 +122,17 @@ func substitutionMap(pb *PipelineBuild) (map[string]string, error) {
 	}
 
 	// Perform substitutions on current map
-	err = pb.Build.Configuration.PerformVarSubstitutions(nw)
-	if err != nil {
+	if err := b.Configuration.PerformVarSubstitutions(nw); err != nil {
 		return nil, err
 	}
 
-	if pb.Subpackage != nil {
-		nw[config.SubstitutionSubPkgDir] = fmt.Sprintf("/home/build/melange-out/%s", pb.Subpackage.Name)
+	if spkg != nil {
+		nw[config.SubstitutionSubPkgDir] = fmt.Sprintf("/home/build/melange-out/%s", spkg.Name)
 		nw[config.SubstitutionTargetsContextdir] = nw[config.SubstitutionSubPkgDir]
 	}
 
-	packageNames := []string{pb.Package.Name}
-	for _, sp := range pb.Build.Configuration.Subpackages {
+	packageNames := []string{pkg.Name}
+	for _, sp := range b.Configuration.Subpackages {
 		packageNames = append(packageNames, sp.Name)
 	}
 
@@ -142,12 +141,12 @@ func substitutionMap(pb *PipelineBuild) (map[string]string, error) {
 		nw[k] = fmt.Sprintf("/home/build/melange-out/%s", pn)
 	}
 
-	for k := range pb.Build.Configuration.Options {
+	for k := range b.Configuration.Options {
 		nk := fmt.Sprintf("${{options.%s.enabled}}", k)
 		nw[nk] = "false"
 	}
 
-	for _, opt := range pb.Build.EnabledBuildOptions {
+	for _, opt := range b.EnabledBuildOptions {
 		nk := fmt.Sprintf("${{options.%s.enabled}}", opt)
 		nw[nk] = "true"
 	}
@@ -184,6 +183,55 @@ func loadPipelineData(dir string, uses string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+func (b *Build) loadPipeline(pb *PipelineBuild, pipeline *config.Pipeline) error {
+	uses, with := pipeline.Uses, pipeline.With
+
+	if uses != "" {
+		data, err := loadPipelineData(b.PipelineDir, uses)
+		if err != nil {
+			data, err = loadPipelineData(b.BuiltinPipelineDir, uses)
+			if err != nil {
+				data, err = f.ReadFile("pipelines/" + uses + ".yaml")
+				if err != nil {
+					return fmt.Errorf("unable to load pipeline: %w", err)
+				}
+			}
+		}
+
+		if err := yaml.Unmarshal(data, pipeline); err != nil {
+			return fmt.Errorf("unable to parse pipeline %q: %w", uses, err)
+		}
+	}
+
+	validated, err := validateWith(with, pipeline.Inputs)
+	if err != nil {
+		return fmt.Errorf("unable to validate pipeline: %w", err)
+	}
+	pipeline.With, err = MutateWith(pb, validated)
+	if err != nil {
+		return fmt.Errorf("mutating pipeline: %w", err)
+	}
+
+	// allow input mutations on needs.packages
+	for i := range pipeline.Needs.Packages {
+		pipeline.Needs.Packages[i], err = util.MutateStringFromMap(pipeline.With, pipeline.Needs.Packages[i])
+		if err != nil {
+			return err
+		}
+	}
+
+	for i := range pipeline.Pipeline {
+		p := &pipeline.Pipeline[i]
+		p.With = util.RightJoinMap(pipeline.With, p.With)
+
+		if err := b.loadPipeline(pb, p); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (pctx *PipelineContext) loadUse(pb *PipelineBuild, uses string, with map[string]string) error {
