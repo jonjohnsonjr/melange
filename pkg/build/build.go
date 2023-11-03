@@ -18,6 +18,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -947,6 +948,14 @@ func (pb *PipelineBuild) ShouldRun(sp config.Subpackage) (bool, error) {
 type linterTarget struct {
 	pkgName string
 	checks  config.Checks
+}
+
+func (b *Build) Lock(ctx context.Context, w io.Writer) error {
+	if err := b.Compile(); err != nil {
+		return err
+	}
+
+	return json.NewEncoder(w).Encode(b.Configuration)
 }
 
 // 1. Compile to inline pipelines and evaluate all substitutions.
