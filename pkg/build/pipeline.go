@@ -185,63 +185,6 @@ func loadPipelineData(dir string, uses string) ([]byte, error) {
 	return data, nil
 }
 
-func (b *Build) loadPipeline(pb *PipelineBuild, pipeline *config.Pipeline) error {
-	uses, with := pipeline.Uses, pipeline.With
-
-	if uses != "" {
-		data, err := loadPipelineData(b.PipelineDir, uses)
-		if err != nil {
-			data, err = loadPipelineData(b.BuiltinPipelineDir, uses)
-			if err != nil {
-				data, err = f.ReadFile("pipelines/" + uses + ".yaml")
-				if err != nil {
-					return fmt.Errorf("unable to load pipeline: %w", err)
-				}
-			}
-		}
-
-		if err := yaml.Unmarshal(data, pipeline); err != nil {
-			return fmt.Errorf("unable to parse pipeline %q: %w", uses, err)
-		}
-	}
-
-	validated, err := validateWith(with, pipeline.Inputs)
-	if err != nil {
-		return fmt.Errorf("unable to validate with: %w", err)
-	}
-	pipeline.With, err = MutateWith(pb, validated)
-	if err != nil {
-		return fmt.Errorf("mutating with: %w", err)
-	}
-
-	// allow input mutations on needs.packages
-	for i := range pipeline.Needs.Packages {
-		pipeline.Needs.Packages[i], err = util.MutateStringFromMap(pipeline.With, pipeline.Needs.Packages[i])
-		if err != nil {
-			return err
-		}
-	}
-
-	pipeline.Runs, err = util.MutateStringFromMap(pipeline.With, pipeline.Runs)
-	if err != nil {
-		return fmt.Errorf("mutating runs: %w", err)
-	}
-
-	for i := range pipeline.Pipeline {
-		p := &pipeline.Pipeline[i]
-		p.With = util.RightJoinMap(pipeline.With, p.With)
-
-		if err := b.loadPipeline(pb, p); err != nil {
-			return err
-		}
-	}
-
-	pipeline.Inputs = nil
-	pipeline.With = nil
-
-	return nil
-}
-
 func (pctx *PipelineContext) loadUse(pb *PipelineBuild, uses string, with map[string]string) error {
 	data, err := loadPipelineData(pb.Build.PipelineDir, uses)
 	if err != nil {

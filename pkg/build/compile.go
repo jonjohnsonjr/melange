@@ -1,0 +1,123 @@
+// Copyright 2023 Chainguard, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package build
+
+import (
+	"fmt"
+
+	"chainguard.dev/melange/pkg/config"
+	"chainguard.dev/melange/pkg/util"
+	"gopkg.in/yaml.v3"
+)
+
+func (b *Build) Compile() error {
+	cfg := b.Configuration
+	pb := &PipelineBuild{
+		Build:   b,
+		Package: &cfg.Package,
+	}
+
+	if err := b.compilePipelines(pb, cfg.Pipeline); err != nil {
+		return fmt.Errorf("compiling %q: %w", cfg.Package.Name, err)
+	}
+
+	for _, sp := range cfg.Subpackages {
+		pb.Subpackage = &sp
+
+		if err := b.compilePipelines(pb, sp.Pipeline); err != nil {
+			return fmt.Errorf("compiling %q: %w", sp.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (b *Build) compilePipelines(pb *PipelineBuild, ps []config.Pipeline) error {
+	for i := range ps {
+		if err := b.compilePipeline(pb, &ps[i]); err != nil {
+			return fmt.Errorf("compiling Pipeline[%d]: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+func (b *Build) compilePipeline(pb *PipelineBuild, pipeline *config.Pipeline) error {
+	uses, with := pipeline.Uses, pipeline.With
+
+	if uses != "" {
+		data, err := loadPipelineData(b.PipelineDir, uses)
+		if err != nil {
+			data, err = loadPipelineData(b.BuiltinPipelineDir, uses)
+			if err != nil {
+				data, err = f.ReadFile("pipelines/" + uses + ".yaml")
+				if err != nil {
+					return fmt.Errorf("unable to load pipeline: %w", err)
+				}
+			}
+		}
+
+		if err := yaml.Unmarshal(data, pipeline); err != nil {
+			return fmt.Errorf("unable to parse pipeline %q: %w", uses, err)
+		}
+	}
+
+	validated, err := validateWith(with, pipeline.Inputs)
+	if err != nil {
+		return fmt.Errorf("unable to validate with: %w", err)
+	}
+
+	mutated, err := MutateWith(pb, validated)
+	if err != nil {
+		return fmt.Errorf("mutating with: %w", err)
+	}
+
+	// allow input mutations on needs.packages
+	for i := range pipeline.Needs.Packages {
+		pipeline.Needs.Packages[i], err = util.MutateStringFromMap(mutated, pipeline.Needs.Packages[i])
+		if err != nil {
+			return fmt.Errorf("mutating needs: %w", err)
+		}
+	}
+
+	if pipeline.WorkDir != "" {
+		pipeline.WorkDir, err = util.MutateStringFromMap(mutated, pipeline.WorkDir)
+		if err != nil {
+			return fmt.Errorf("mutating workdir: %w", err)
+		}
+	}
+
+	pipeline.Runs, err = util.MutateStringFromMap(mutated, pipeline.Runs)
+	if err != nil {
+		return fmt.Errorf("mutating runs: %w", err)
+	}
+
+	pipeline.If, err = util.MutateStringFromMap(mutated, pipeline.If)
+
+	for i := range pipeline.Pipeline {
+		p := &pipeline.Pipeline[i]
+		p.With = util.RightJoinMap(mutated, p.With)
+
+		if err := b.compilePipeline(pb, p); err != nil {
+			return fmt.Errorf("compiling Pipeline[%d]: %w", i, err)
+		}
+	}
+
+	// Clear these now that we're done with them.
+	pipeline.Inputs = nil
+	pipeline.With = nil
+
+	return nil
+}
