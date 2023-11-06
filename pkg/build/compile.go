@@ -29,25 +29,19 @@ func (b *Build) Compile() error {
 		Package: &cfg.Package,
 	}
 
-	if err := b.compilePipelines(pb, cfg.Pipeline); err != nil {
-		return fmt.Errorf("compiling %q: %w", cfg.Package.Name, err)
+	for i := range cfg.Pipeline {
+		if err := b.compilePipeline(pb, &cfg.Pipeline[i]); err != nil {
+			return fmt.Errorf("compiling Pipeline[%d]: %w", i, err)
+		}
 	}
 
 	for _, sp := range cfg.Subpackages {
 		pb.Subpackage = &sp
 
-		if err := b.compilePipelines(pb, sp.Pipeline); err != nil {
-			return fmt.Errorf("compiling %q: %w", sp.Name, err)
-		}
-	}
-
-	return nil
-}
-
-func (b *Build) compilePipelines(pb *PipelineBuild, ps []config.Pipeline) error {
-	for i := range ps {
-		if err := b.compilePipeline(pb, &ps[i]); err != nil {
-			return fmt.Errorf("compiling Pipeline[%d]: %w", i, err)
+		for i := range sp.Pipeline {
+			if err := b.compilePipeline(pb, &sp.Pipeline[i]); err != nil {
+				return fmt.Errorf("compiling Pipeline[%d]: %w", i, err)
+			}
 		}
 	}
 
