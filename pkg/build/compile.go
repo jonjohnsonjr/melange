@@ -108,7 +108,10 @@ func (b *Build) compilePipeline(pb *PipelineBuild, pipeline *config.Pipeline) er
 		return fmt.Errorf("mutating runs: %w", err)
 	}
 
-	pipeline.If, err = util.MutateStringFromMap(mutated, pipeline.If)
+	pipeline.If, err = util.MutateAndQuoteStringFromMap(mutated, pipeline.If)
+	if err != nil {
+		return fmt.Errorf("mutating if: %w", err)
+	}
 
 	for i := range pipeline.Pipeline {
 		p := &pipeline.Pipeline[i]
