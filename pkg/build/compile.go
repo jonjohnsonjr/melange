@@ -17,6 +17,7 @@ package build
 import (
 	"fmt"
 
+	"chainguard.dev/melange/pkg/cond"
 	"chainguard.dev/melange/pkg/config"
 	"chainguard.dev/melange/pkg/util"
 	"gopkg.in/yaml.v3"
@@ -33,6 +34,10 @@ func (b *Build) Compile() error {
 		if err := b.compilePipeline(pb, &cfg.Pipeline[i]); err != nil {
 			return fmt.Errorf("compiling Pipeline[%d]: %w", i, err)
 		}
+
+		if err := b.gatherDeps(&cfg.Pipeline[i]); err != nil {
+			return fmt.Errorf("gathering deps for Pipeline[%d]: %w", i, err)
+		}
 	}
 
 	for _, sp := range cfg.Subpackages {
@@ -40,7 +45,10 @@ func (b *Build) Compile() error {
 
 		for i := range sp.Pipeline {
 			if err := b.compilePipeline(pb, &sp.Pipeline[i]); err != nil {
-				return fmt.Errorf("compiling Pipeline[%d]: %w", i, err)
+				return fmt.Errorf("compiling subpackage %q Pipeline[%d]: %w", sp.Name, i, err)
+			}
+			if err := b.gatherDeps(&sp.Pipeline[i]); err != nil {
+				return fmt.Errorf("gathering deps for subpackage %q Pipeline[%d]: %w", sp.Name, i, err)
 			}
 		}
 	}
@@ -112,6 +120,42 @@ func (b *Build) compilePipeline(pb *PipelineBuild, pipeline *config.Pipeline) er
 	// Clear these now that we're done with them.
 	pipeline.Inputs = nil
 	pipeline.With = nil
+
+	return nil
+}
+
+func identity(p *config.Pipeline) string {
+	if p.Name != "" {
+		return p.Name
+	}
+	if p.Uses != "" {
+		return p.Uses
+	}
+	return "???"
+}
+
+func (b *Build) gatherDeps(pipeline *config.Pipeline) error {
+	ic := &b.Configuration.Environment
+	id := identity(pipeline)
+
+	if result, err := cond.Evaluate(pipeline.If); err != nil {
+		return fmt.Errorf("evaluating conditional %q: %w", pipeline.If, err)
+	} else if !result {
+		return nil
+	}
+
+	for _, pkg := range pipeline.Needs.Packages {
+		b.Logger.Printf("  adding package %q for pipeline %q", pkg, id)
+	}
+	ic.Contents.Packages = append(ic.Contents.Packages, pipeline.Needs.Packages...)
+
+	pipeline.Needs.Packages = nil
+
+	for _, p := range pipeline.Pipeline {
+		if err := b.gatherDeps(&p); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
