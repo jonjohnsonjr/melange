@@ -138,10 +138,12 @@ func (b *Build) gatherDeps(pipeline *config.Pipeline) error {
 	ic := &b.Configuration.Environment
 	id := identity(pipeline)
 
-	if result, err := cond.Evaluate(pipeline.If); err != nil {
-		return fmt.Errorf("evaluating conditional %q: %w", pipeline.If, err)
-	} else if !result {
-		return nil
+	if pipeline.If != "" {
+		if result, err := cond.Evaluate(pipeline.If); err != nil {
+			return fmt.Errorf("evaluating conditional %q: %w", pipeline.If, err)
+		} else if !result {
+			return nil
+		}
 	}
 
 	for _, pkg := range pipeline.Needs.Packages {
