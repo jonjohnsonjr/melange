@@ -87,10 +87,12 @@ func (b *Build) compilePipeline(pb *PipelineBuild, pipeline *config.Pipeline) er
 	}
 
 	// allow input mutations on needs.packages
-	for i := range pipeline.Needs.Packages {
-		pipeline.Needs.Packages[i], err = util.MutateStringFromMap(mutated, pipeline.Needs.Packages[i])
-		if err != nil {
-			return fmt.Errorf("mutating needs: %w", err)
+	if pipeline.Needs != nil {
+		for i := range pipeline.Needs.Packages {
+			pipeline.Needs.Packages[i], err = util.MutateStringFromMap(mutated, pipeline.Needs.Packages[i])
+			if err != nil {
+				return fmt.Errorf("mutating needs: %w", err)
+			}
 		}
 	}
 
@@ -146,12 +148,14 @@ func (b *Build) gatherDeps(pipeline *config.Pipeline) error {
 		}
 	}
 
-	for _, pkg := range pipeline.Needs.Packages {
-		b.Logger.Printf("  adding package %q for pipeline %q", pkg, id)
-	}
-	ic.Contents.Packages = append(ic.Contents.Packages, pipeline.Needs.Packages...)
+	if pipeline.Needs != nil {
+		for _, pkg := range pipeline.Needs.Packages {
+			b.Logger.Printf("  adding package %q for pipeline %q", pkg, id)
+		}
+		ic.Contents.Packages = append(ic.Contents.Packages, pipeline.Needs.Packages...)
 
-	pipeline.Needs.Packages = nil
+		pipeline.Needs = nil
+	}
 
 	for _, p := range pipeline.Pipeline {
 		if err := b.gatherDeps(&p); err != nil {
