@@ -987,26 +987,10 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 		b.GuestDir = guestDir
 	}
 
-	b.Logger.Printf("evaluating pipelines for package requirements")
-	for _, p := range b.Configuration.Pipeline {
-		pctx := NewPipelineContext(&p, b.Logger)
-
-		if err := pctx.ApplyNeeds(&pb); err != nil {
-			return fmt.Errorf("unable to apply pipeline requirements: %w", err)
-		}
+	b.Logger.Printf("compiling pipelines")
+	if err := b.Compile(); err != nil {
+		return fmt.Errorf("compiling pipelines: %w", err)
 	}
-
-	for _, spkg := range b.Configuration.Subpackages {
-		spkg := spkg
-		pb.Subpackage = &spkg
-		for _, p := range spkg.Pipeline {
-			pctx := NewPipelineContext(&p, b.Logger)
-			if err := pctx.ApplyNeeds(&pb); err != nil {
-				return fmt.Errorf("unable to apply pipeline requirements: %w", err)
-			}
-		}
-	}
-	pb.Subpackage = nil
 
 	if !b.IsBuildLess() {
 		if err := b.BuildGuest(ctx); err != nil {
