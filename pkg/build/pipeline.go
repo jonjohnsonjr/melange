@@ -15,7 +15,6 @@
 package build
 
 import (
-	"context"
 	"embed"
 	"fmt"
 	"os"
@@ -23,49 +22,14 @@ import (
 	"strconv"
 	"strings"
 
-	"go.opentelemetry.io/otel"
-
-	"gopkg.in/yaml.v3"
-
-	apko_log "chainguard.dev/apko/pkg/log"
-
-	"chainguard.dev/melange/pkg/cond"
 	"chainguard.dev/melange/pkg/config"
-	"chainguard.dev/melange/pkg/logger"
 	"chainguard.dev/melange/pkg/util"
 )
-
-type PipelineContext struct {
-	Pipeline *config.Pipeline
-	logger   apko_log.Logger
-	steps    int
-}
-
-func NewPipelineContext(p *config.Pipeline, log apko_log.Logger) *PipelineContext {
-	if log == nil {
-		log = logger.NopLogger{}
-	}
-	return &PipelineContext{
-		Pipeline: p,
-		logger:   log,
-		steps:    0,
-	}
-}
 
 type PipelineBuild struct {
 	Build      *Build
 	Package    *config.Package
 	Subpackage *config.Subpackage
-}
-
-func (pctx *PipelineContext) Identity() string {
-	if pctx.Pipeline.Name != "" {
-		return pctx.Pipeline.Name
-	}
-	if pctx.Pipeline.Uses != "" {
-		return pctx.Pipeline.Uses
-	}
-	return "???"
 }
 
 func MutateWith(pb *PipelineBuild, with map[string]string) (map[string]string, error) {
@@ -185,80 +149,11 @@ func loadPipelineData(dir string, uses string) ([]byte, error) {
 	return data, nil
 }
 
-func (pctx *PipelineContext) loadUse(pb *PipelineBuild, uses string, with map[string]string) error {
-	data, err := loadPipelineData(pb.Build.PipelineDir, uses)
-	if err != nil {
-		data, err = loadPipelineData(pb.Build.BuiltinPipelineDir, uses)
-		if err != nil {
-			data, err = f.ReadFile("pipelines/" + uses + ".yaml")
-			if err != nil {
-				return fmt.Errorf("unable to load pipeline: %w", err)
-			}
-		}
-	}
-
-	if err := yaml.Unmarshal(data, &pctx.Pipeline); err != nil {
-		return fmt.Errorf("unable to parse pipeline %q: %w", uses, err)
-	}
-
-	validated, err := validateWith(with, pctx.Pipeline.Inputs)
-	if err != nil {
-		return fmt.Errorf("unable to construct pipeline: %w", err)
-	}
-	pctx.Pipeline.With, err = MutateWith(pb, validated)
-	if err != nil {
-		return err
-	}
-
-	// allow input mutations on needs.packages
-	for p := range pctx.Pipeline.Needs.Packages {
-		pctx.Pipeline.Needs.Packages[p], err = util.MutateStringFromMap(pctx.Pipeline.With, pctx.Pipeline.Needs.Packages[p])
-		if err != nil {
-			return err
-		}
-	}
-
-	for k := range pctx.Pipeline.Pipeline {
-		pctx.Pipeline.Pipeline[k].With = util.RightJoinMap(pctx.Pipeline.With, pctx.Pipeline.Pipeline[k].With)
-	}
-
-	return nil
-}
-
-func (pctx *PipelineContext) dumpWith() {
-	for k, v := range pctx.Pipeline.With {
-		pctx.logger.Debugf("    %s: %s", k, v)
-	}
-}
-
-func (pctx *PipelineContext) evalUse(ctx context.Context, pb *PipelineBuild) error {
-	spctx := NewPipelineContext(&config.Pipeline{}, pb.Build.Logger)
-
-	if err := spctx.loadUse(pb, pctx.Pipeline.Uses, pctx.Pipeline.With); err != nil {
-		return err
-	}
-	spctx.Pipeline.WorkDir = pctx.Pipeline.WorkDir
-
-	pctx.logger.Printf("  using %s", pctx.Pipeline.Uses)
-	spctx.dumpWith()
-
-	ran, err := spctx.Run(ctx, pb)
-	if err != nil {
-		return err
-	}
-
-	if ran {
-		pctx.steps++
-	}
-
-	return nil
-}
-
 // Build a script to run as part of evalRun
-func (pctx *PipelineContext) buildEvalRunCommand(debugOption rune, sysPath string, workdir string, fragment string) []string {
+func buildEvalRunCommand(pipeline *config.Pipeline, debugOption rune, sysPath string, workdir string, fragment string) []string {
 	envExport := "export %s='%s'"
 	envArr := []string{}
-	for k, v := range pctx.Pipeline.Environment {
+	for k, v := range pipeline.Environment {
 		envArr = append(envArr, fmt.Sprintf(envExport, k, v))
 	}
 	envString := strings.Join(envArr, "\n")
@@ -270,192 +165,6 @@ cd '%s'
 %s
 exit 0`, debugOption, sysPath, envString, workdir, workdir, workdir, fragment)
 	return []string{"/bin/sh", "-c", script}
-}
-
-func (pctx *PipelineContext) evalRun(ctx context.Context, pb *PipelineBuild) error {
-	var err error
-	pctx.Pipeline.With, err = MutateWith(pb, pctx.Pipeline.With)
-	if err != nil {
-		return err
-	}
-	pctx.dumpWith()
-
-	debugOption := ' '
-	if pb.Build.Debug {
-		debugOption = 'x'
-	}
-
-	sysPath := "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-	workdir := "/home/build"
-	if pctx.Pipeline.WorkDir != "" {
-		workdir, err = util.MutateStringFromMap(pctx.Pipeline.With, pctx.Pipeline.WorkDir)
-		if err != nil {
-			return err
-		}
-	}
-
-	fragment, err := util.MutateStringFromMap(pctx.Pipeline.With, pctx.Pipeline.Runs)
-	if err != nil {
-		return err
-	}
-
-	command := pctx.buildEvalRunCommand(debugOption, sysPath, workdir, fragment)
-	config := pb.Build.WorkspaceConfig()
-	if err := pb.Build.Runner.Run(ctx, config, command...); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (pctx *PipelineContext) evaluateBranchConditional(pb *PipelineBuild) bool {
-	if pctx.Pipeline.If == "" {
-		return true
-	}
-
-	lookupWith := func(key string) (string, error) {
-		mutated, err := MutateWith(pb, pctx.Pipeline.With)
-		if err != nil {
-			return "", err
-		}
-		nk := fmt.Sprintf("${{%s}}", key)
-		return mutated[nk], nil
-	}
-
-	result, err := cond.Evaluate(pctx.Pipeline.If, lookupWith)
-	if err != nil {
-		panic(fmt.Errorf("could not evaluate if-conditional '%s': %w", pctx.Pipeline.If, err))
-	}
-
-	pctx.logger.Printf("evaluating if-conditional '%s' --> %t", pctx.Pipeline.If, result)
-
-	return result
-}
-
-func (pctx *PipelineContext) isContinuationPoint(pb *PipelineBuild) bool {
-	b := pb.Build
-
-	if b.ContinueLabel == "" {
-		return true
-	}
-
-	if b.ContinueLabel == pctx.Pipeline.Label {
-		b.foundContinuation = true
-	}
-
-	return b.foundContinuation
-}
-
-func (pctx *PipelineContext) shouldEvaluateBranch(pb *PipelineBuild) bool {
-	if !pctx.isContinuationPoint(pb) {
-		return false
-	}
-
-	return pctx.evaluateBranchConditional(pb)
-}
-
-func (pctx *PipelineContext) evaluateBranch(ctx context.Context, pb *PipelineBuild) error {
-	if pctx.Identity() != "???" {
-		pctx.logger.Printf("running step %s", pctx.Identity())
-	}
-
-	if pctx.Pipeline.Uses != "" {
-		return pctx.evalUse(ctx, pb)
-	}
-
-	if pctx.Pipeline.Runs != "" {
-		return pctx.evalRun(ctx, pb)
-	}
-
-	return nil
-}
-
-func (pctx *PipelineContext) checkAssertions(pb *PipelineBuild) error {
-	if pctx.Pipeline.Assertions == nil {
-		return nil
-	}
-
-	if pctx.Pipeline.Assertions.RequiredSteps > 0 && pctx.steps < pctx.Pipeline.Assertions.RequiredSteps {
-		return fmt.Errorf("pipeline did not run the required %d steps, only %d", pctx.Pipeline.Assertions.RequiredSteps, pctx.steps)
-	}
-
-	return nil
-}
-
-func (pctx *PipelineContext) Run(ctx context.Context, pb *PipelineBuild) (bool, error) {
-	ctx, span := otel.Tracer("melange").Start(ctx, "Pipeline.Run")
-	defer span.End()
-
-	if pctx.Pipeline.Label != "" && pctx.Pipeline.Label == pb.Build.BreakpointLabel {
-		return false, fmt.Errorf("stopping execution at breakpoint: %s", pctx.Pipeline.Label)
-	}
-
-	if !pctx.shouldEvaluateBranch(pb) {
-		return false, nil
-	}
-
-	if err := pctx.evaluateBranch(ctx, pb); err != nil {
-		return false, err
-	}
-
-	for _, sp := range pctx.Pipeline.Pipeline {
-		spctx := NewPipelineContext(&sp, pb.Build.Logger)
-		if spctx.Pipeline.WorkDir == "" {
-			spctx.Pipeline.WorkDir = pctx.Pipeline.WorkDir
-		}
-
-		ran, err := spctx.Run(ctx, pb)
-
-		if err != nil {
-			return false, err
-		}
-
-		if ran {
-			pctx.steps++
-		}
-	}
-
-	if err := pctx.checkAssertions(pb); err != nil {
-		return false, err
-	}
-
-	return true, nil
-}
-
-// TODO(kaniini): Precompile pipeline before running / evaluating its
-// needs.
-func (pctx *PipelineContext) ApplyNeeds(pb *PipelineBuild) error {
-	ic := &pb.Build.Configuration.Environment
-
-	for _, pkg := range pctx.Pipeline.Needs.Packages {
-		pctx.logger.Printf("  adding package %q for pipeline %q", pkg, pctx.Identity())
-		ic.Contents.Packages = append(ic.Contents.Packages, pkg)
-	}
-
-	if pctx.Pipeline.Uses != "" {
-		spctx := NewPipelineContext(nil, pb.Build.Logger)
-
-		if err := spctx.loadUse(pb, pctx.Pipeline.Uses, pctx.Pipeline.With); err != nil {
-			return err
-		}
-
-		if err := spctx.ApplyNeeds(pb); err != nil {
-			return err
-		}
-	}
-
-	ic.Contents.Packages = util.Dedup(ic.Contents.Packages)
-
-	for _, sp := range pctx.Pipeline.Pipeline {
-		spctx := NewPipelineContext(&sp, pb.Build.Logger)
-
-		if err := spctx.ApplyNeeds(pb); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 //go:embed pipelines/*
