@@ -64,6 +64,8 @@ func (b *Build) Compile() error {
 		}
 	}
 
+	b.Configuration.Environment.Contents.Packages = util.Dedup(b.Configuration.Environment.Contents.Packages)
+
 	return nil
 }
 
@@ -170,12 +172,13 @@ func (b *Build) gatherDeps(pipeline *config.Pipeline) error {
 		}
 		ic.Contents.Packages = append(ic.Contents.Packages, pipeline.Needs.Packages...)
 
+		// Clear this now that we're done with it.
 		pipeline.Needs = nil
 	}
 
 	for _, p := range pipeline.Pipeline {
 		if err := b.gatherDeps(&p); err != nil {
-			return err
+			return fmt.Errorf("gathering deps: %w", err)
 		}
 	}
 

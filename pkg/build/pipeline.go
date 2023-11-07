@@ -34,7 +34,7 @@ type PipelineBuild struct {
 }
 
 func MutateWith(pb *PipelineBuild, with map[string]string) (map[string]string, error) {
-	nw, err := substitutionMap(pb.Build, pb.Package, pb.Subpackage)
+	nw, err := substitutionMap(pb)
 	if err != nil {
 		return nil, err
 	}
@@ -61,23 +61,23 @@ func MutateWith(pb *PipelineBuild, with map[string]string) (map[string]string, e
 	return nw, nil
 }
 
-func substitutionMap(b *Build, pkg *config.Package, spkg *config.Subpackage) (map[string]string, error) {
+func substitutionMap(pb *PipelineBuild) (map[string]string, error) {
 	nw := map[string]string{
-		config.SubstitutionPackageName:          pkg.Name,
-		config.SubstitutionPackageVersion:       pkg.Version,
-		config.SubstitutionPackageEpoch:         strconv.FormatUint(pkg.Epoch, 10),
+		config.SubstitutionPackageName:          pb.Package.Name,
+		config.SubstitutionPackageVersion:       pb.Package.Version,
+		config.SubstitutionPackageEpoch:         strconv.FormatUint(pb.Package.Epoch, 10),
 		config.SubstitutionPackageFullVersion:   fmt.Sprintf("%s-r%s", config.SubstitutionPackageVersion, config.SubstitutionPackageEpoch),
-		config.SubstitutionTargetsDestdir:       fmt.Sprintf("/home/build/melange-out/%s", pkg.Name),
-		config.SubstitutionTargetsContextdir:    fmt.Sprintf("/home/build/melange-out/%s", pkg.Name),
-		config.SubstitutionHostTripletGnu:       b.BuildTripletGnu(),
-		config.SubstitutionHostTripletRust:      b.BuildTripletRust(),
-		config.SubstitutionCrossTripletGnuGlibc: b.Arch.ToTriplet("gnu"),
-		config.SubstitutionCrossTripletGnuMusl:  b.Arch.ToTriplet("musl"),
-		config.SubstitutionBuildArch:            b.Arch.ToAPK(),
+		config.SubstitutionTargetsDestdir:       fmt.Sprintf("/home/build/melange-out/%s", pb.Package.Name),
+		config.SubstitutionTargetsContextdir:    fmt.Sprintf("/home/build/melange-out/%s", pb.Package.Name),
+		config.SubstitutionHostTripletGnu:       pb.Build.BuildTripletGnu(),
+		config.SubstitutionHostTripletRust:      pb.Build.BuildTripletRust(),
+		config.SubstitutionCrossTripletGnuGlibc: pb.Build.Arch.ToTriplet("gnu"),
+		config.SubstitutionCrossTripletGnuMusl:  pb.Build.Arch.ToTriplet("musl"),
+		config.SubstitutionBuildArch:            pb.Build.Arch.ToAPK(),
 	}
 
 	// Retrieve vars from config
-	subst_nw, err := b.Configuration.GetVarsFromConfig()
+	subst_nw, err := pb.Build.Configuration.GetVarsFromConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -87,17 +87,17 @@ func substitutionMap(b *Build, pkg *config.Package, spkg *config.Subpackage) (ma
 	}
 
 	// Perform substitutions on current map
-	if err := b.Configuration.PerformVarSubstitutions(nw); err != nil {
+	if err := pb.Build.Configuration.PerformVarSubstitutions(nw); err != nil {
 		return nil, err
 	}
 
-	if spkg != nil {
-		nw[config.SubstitutionSubPkgDir] = fmt.Sprintf("/home/build/melange-out/%s", spkg.Name)
+	if pb.Subpackage != nil {
+		nw[config.SubstitutionSubPkgDir] = fmt.Sprintf("/home/build/melange-out/%s", pb.Subpackage.Name)
 		nw[config.SubstitutionTargetsContextdir] = nw[config.SubstitutionSubPkgDir]
 	}
 
-	packageNames := []string{pkg.Name}
-	for _, sp := range b.Configuration.Subpackages {
+	packageNames := []string{pb.Package.Name}
+	for _, sp := range pb.Build.Configuration.Subpackages {
 		packageNames = append(packageNames, sp.Name)
 	}
 
@@ -106,12 +106,12 @@ func substitutionMap(b *Build, pkg *config.Package, spkg *config.Subpackage) (ma
 		nw[k] = fmt.Sprintf("/home/build/melange-out/%s", pn)
 	}
 
-	for k := range b.Configuration.Options {
+	for k := range pb.Build.Configuration.Options {
 		nk := fmt.Sprintf("${{options.%s.enabled}}", k)
 		nw[nk] = "false"
 	}
 
-	for _, opt := range b.EnabledBuildOptions {
+	for _, opt := range pb.Build.EnabledBuildOptions {
 		nk := fmt.Sprintf("${{options.%s.enabled}}", opt)
 		nw[nk] = "true"
 	}
@@ -184,7 +184,7 @@ func (b *Build) run(ctx context.Context, pipeline *config.Pipeline) (bool, error
 		}
 	}
 
-	if result, err := shouldRun(pipeline.If); !result {
+	if result, err := b.shouldRun(pipeline.If); !result {
 		return result, err
 	}
 

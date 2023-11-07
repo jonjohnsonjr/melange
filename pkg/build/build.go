@@ -923,7 +923,7 @@ func (b *Build) PopulateWorkspace(ctx context.Context) error {
 	})
 }
 
-func shouldRun(ifs string) (bool, error) {
+func (b *Build) shouldRun(ifs string) (bool, error) {
 	if ifs == "" {
 		return true, nil
 	}
@@ -932,6 +932,8 @@ func shouldRun(ifs string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("evaluating if-conditional %q: %w", ifs, err)
 	}
+
+	b.Logger.Printf("evaluating if-conditional '%s' --> %t", ifs, result)
 
 	return result, nil
 }
@@ -979,7 +981,7 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 
 	// Filter out any subpackages with false If conditions.
 	b.Configuration.Subpackages = slices.DeleteFunc(b.Configuration.Subpackages, func(sp config.Subpackage) bool {
-		result, err := shouldRun(sp.If)
+		result, err := b.shouldRun(sp.If)
 		if err != nil {
 			// This shouldn't give an error because we evaluate it in Compile.
 			panic(err)
@@ -1041,12 +1043,6 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 		linterQueue = append(linterQueue, lintTarget)
 	}
 
-	// Run the SBOM generator
-	generator, err := sbom.NewGenerator()
-	if err != nil {
-		return fmt.Errorf("creating sbom generator: %w", err)
-	}
-
 	// Capture languages declared in pipelines
 	langs := []string{}
 	namespace := b.Namespace
@@ -1056,10 +1052,8 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 
 	// run any pipelines for subpackages
 	for _, sp := range b.Configuration.Subpackages {
-		sp := sp
 		if !b.IsBuildLess() {
 			b.Logger.Printf("running pipeline for subpackage %s", sp.Name)
-			pb.Subpackage = &sp
 
 			if err := b.runPipelines(ctx, sp.Pipeline); err != nil {
 				return fmt.Errorf("unable to run subpackage %s: %w", sp.Name, err)
@@ -1092,28 +1086,31 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 		linters := lt.checks.GetLinters()
 
 		var innerErr error
-		err = linter.LintBuild(lt.pkgName, path, func(err error) {
+		if err := linter.LintBuild(lt.pkgName, path, func(err error) {
 			if b.FailOnLintWarning {
 				innerErr = err
 			} else {
 				b.Logger.Warnf("WARNING: %v", err)
 			}
-		}, linters)
-		if err != nil {
+		}, linters); err != nil {
 			return fmt.Errorf("package linter error: %w", err)
 		} else if innerErr != nil {
 			return fmt.Errorf("package linter warning: %w", err)
 		}
 	}
 
+	// Run the SBOM generator
+	generator, err := sbom.NewGenerator()
+	if err != nil {
+		return fmt.Errorf("creating sbom generator: %w", err)
+	}
+
 	// generate SBOMs for subpackages
 	for _, sp := range b.Configuration.Subpackages {
-		sp := sp
 		langs := []string{}
 
 		if !b.IsBuildLess() {
 			b.Logger.Printf("generating SBOM for subpackage %s", sp.Name)
-			pb.Subpackage = &sp
 
 			for _, p := range sp.Pipeline {
 				langs = append(langs, p.SBOM.Language)
@@ -1154,9 +1151,6 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 
 	// emit subpackages
 	for _, sp := range b.Configuration.Subpackages {
-		sp := sp
-		pb.Subpackage = &sp
-
 		if err := pb.Emit(ctx, pkgFromSub(&sp)); err != nil {
 			return fmt.Errorf("unable to emit package: %w", err)
 		}
@@ -1186,11 +1180,8 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 		pkgFileName := fmt.Sprintf("%s-%s-r%d.apk", b.Configuration.Package.Name, b.Configuration.Package.Version, b.Configuration.Package.Epoch)
 		apkFiles = append(apkFiles, filepath.Join(packageDir, pkgFileName))
 
-		for _, subpkg := range b.Configuration.Subpackages {
-			subpkg := subpkg
-			pb.Subpackage = &subpkg
-
-			subpkgFileName := fmt.Sprintf("%s-%s-r%d.apk", subpkg.Name, b.Configuration.Package.Version, b.Configuration.Package.Epoch)
+		for _, sp := range b.Configuration.Subpackages {
+			subpkgFileName := fmt.Sprintf("%s-%s-r%d.apk", sp.Name, b.Configuration.Package.Version, b.Configuration.Package.Epoch)
 			apkFiles = append(apkFiles, filepath.Join(packageDir, subpkgFileName))
 		}
 
