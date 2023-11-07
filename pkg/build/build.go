@@ -18,7 +18,6 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +38,7 @@ import (
 	"github.com/yookoala/realpath"
 	"github.com/zealic/xignore"
 	"go.opentelemetry.io/otel"
+	"golang.org/x/exp/slices"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"k8s.io/kube-openapi/pkg/util/sets"
@@ -923,23 +923,14 @@ func (b *Build) PopulateWorkspace(ctx context.Context) error {
 	})
 }
 
-func (pb *PipelineBuild) ShouldRun(sp config.Subpackage) (bool, error) {
-	if sp.If == "" {
+func shouldRun(ifs string) (bool, error) {
+	if ifs == "" {
 		return true, nil
 	}
 
-	lookupWith := func(key string) (string, error) {
-		mutated, err := MutateWith(pb, map[string]string{})
-		if err != nil {
-			return "", err
-		}
-		nk := fmt.Sprintf("${{%s}}", key)
-		return mutated[nk], nil
-	}
-
-	result, err := cond.Evaluate(sp.If, lookupWith)
+	result, err := cond.Evaluate(ifs)
 	if err != nil {
-		return false, fmt.Errorf("evaluating subpackage if-conditional: %w", err)
+		return false, fmt.Errorf("evaluating if-conditional %q: %w", ifs, err)
 	}
 
 	return result, nil
@@ -950,22 +941,16 @@ type linterTarget struct {
 	checks  config.Checks
 }
 
-func (b *Build) Lock(ctx context.Context, w io.Writer) error {
-	if err := b.Compile(); err != nil {
-		return err
+func (b *Build) runPipelines(ctx context.Context, pipelines []config.Pipeline) error {
+	for _, p := range pipelines {
+		if _, err := b.run(ctx, &p); err != nil {
+			return fmt.Errorf("unable to run pipeline: %w", err)
+		}
 	}
 
-	return json.NewEncoder(w).Encode(b.Configuration)
+	return nil
 }
 
-// 1. Compile to inline pipelines and evaluate all substitutions.
-// 2. Collect transitive dependencies.
-// 3. Build guest container.
-// 4. Execute each pipeline.
-// 5. Run linters.
-// 6. Generate SBOMs.
-// 7. Emit package and subpackages.
-// 8. Generate the index.
 func (b *Build) BuildPackage(ctx context.Context) error {
 	ctx, span := otel.Tracer("melange").Start(ctx, "BuildPackage")
 	defer span.End()
@@ -991,6 +976,17 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 	if err := b.Compile(); err != nil {
 		return fmt.Errorf("compiling pipelines: %w", err)
 	}
+
+	// Filter out any subpackages with false If conditions.
+	b.Configuration.Subpackages = slices.DeleteFunc(b.Configuration.Subpackages, func(sp config.Subpackage) bool {
+		result, err := shouldRun(sp.If)
+		if err != nil {
+			// This shouldn't give an error because we evaluate it in Compile.
+			panic(err)
+		}
+
+		return result
+	})
 
 	if !b.IsBuildLess() {
 		if err := b.BuildGuest(ctx); err != nil {
@@ -1034,11 +1030,8 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 
 		// run the main pipeline
 		b.Logger.Printf("running the main pipeline")
-		for _, p := range b.Configuration.Pipeline {
-			pctx := NewPipelineContext(&p, b.Logger)
-			if _, err := pctx.Run(ctx, &pb); err != nil {
-				return fmt.Errorf("unable to run pipeline: %w", err)
-			}
+		if err := b.runPipelines(ctx, b.Configuration.Pipeline); err != nil {
+			return fmt.Errorf("running main pipeline: %w", err)
 		}
 
 		// add the main package to the linter queue
@@ -1068,19 +1061,8 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 			b.Logger.Printf("running pipeline for subpackage %s", sp.Name)
 			pb.Subpackage = &sp
 
-			result, err := pb.ShouldRun(sp)
-			if err != nil {
-				return err
-			}
-			if !result {
-				continue
-			}
-
-			for _, p := range sp.Pipeline {
-				pctx := NewPipelineContext(&p, b.Logger)
-				if _, err := pctx.Run(ctx, &pb); err != nil {
-					return fmt.Errorf("unable to run pipeline: %w", err)
-				}
+			if err := b.runPipelines(ctx, sp.Pipeline); err != nil {
+				return fmt.Errorf("unable to run subpackage %s: %w", sp.Name, err)
 			}
 		}
 
@@ -1133,14 +1115,6 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 			b.Logger.Printf("generating SBOM for subpackage %s", sp.Name)
 			pb.Subpackage = &sp
 
-			result, err := pb.ShouldRun(sp)
-			if err != nil {
-				return err
-			}
-			if !result {
-				continue
-			}
-
 			for _, p := range sp.Pipeline {
 				langs = append(langs, p.SBOM.Language)
 			}
@@ -1183,14 +1157,6 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 		sp := sp
 		pb.Subpackage = &sp
 
-		result, err := pb.ShouldRun(sp)
-		if err != nil {
-			return err
-		}
-		if !result {
-			continue
-		}
-
 		if err := pb.Emit(ctx, pkgFromSub(&sp)); err != nil {
 			return fmt.Errorf("unable to emit package: %w", err)
 		}
@@ -1223,14 +1189,6 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 		for _, subpkg := range b.Configuration.Subpackages {
 			subpkg := subpkg
 			pb.Subpackage = &subpkg
-
-			result, err := pb.ShouldRun(subpkg)
-			if err != nil {
-				return err
-			}
-			if !result {
-				continue
-			}
 
 			subpkgFileName := fmt.Sprintf("%s-%s-r%d.apk", subpkg.Name, b.Configuration.Package.Version, b.Configuration.Package.Epoch)
 			apkFiles = append(apkFiles, filepath.Join(packageDir, subpkgFileName))

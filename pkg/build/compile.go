@@ -43,6 +43,17 @@ func (b *Build) Compile() error {
 	for _, sp := range cfg.Subpackages {
 		pb.Subpackage = &sp
 
+		if sp.If != "" {
+			mutated, err := MutateWith(pb, map[string]string{})
+			if err != nil {
+				return fmt.Errorf("creating subpackage map: %w", err)
+			}
+			sp.If, err = util.MutateAndQuoteStringFromMap(mutated, sp.If)
+			if err != nil {
+				return fmt.Errorf("mutating subpackage if: %w", err)
+			}
+		}
+
 		for i := range sp.Pipeline {
 			if err := b.compilePipeline(pb, &sp.Pipeline[i]); err != nil {
 				return fmt.Errorf("compiling subpackage %q Pipeline[%d]: %w", sp.Name, i, err)
@@ -108,9 +119,11 @@ func (b *Build) compilePipeline(pb *PipelineBuild, pipeline *config.Pipeline) er
 		return fmt.Errorf("mutating runs: %w", err)
 	}
 
-	pipeline.If, err = util.MutateAndQuoteStringFromMap(mutated, pipeline.If)
-	if err != nil {
-		return fmt.Errorf("mutating if: %w", err)
+	if pipeline.If != "" {
+		pipeline.If, err = util.MutateAndQuoteStringFromMap(mutated, pipeline.If)
+		if err != nil {
+			return fmt.Errorf("mutating if: %w", err)
+		}
 	}
 
 	for i := range pipeline.Pipeline {
