@@ -64,7 +64,7 @@ func (dk *docker) Close() error {
 
 // StartPod starts a pod for supporting a Docker task, if
 // necessary.
-func (dk *docker) StartPod(ctx context.Context, cfg *Config) error {
+func (dk *docker) StartPod(ctx context.Context, cfg *Config) (string, error) {
 	log := clog.FromContext(ctx)
 
 	ctx, span := otel.Tracer("melange").Start(ctx, "docker.StartPod")
@@ -87,14 +87,14 @@ func (dk *docker) StartPod(ctx context.Context, cfg *Config) error {
 	if cfg.CPU != "" {
 		res, err := resource.ParseQuantity(cfg.CPU)
 		if err != nil {
-			return fmt.Errorf("parsing CPU resource: %w", err)
+			return "", fmt.Errorf("parsing CPU resource: %w", err)
 		}
 		hostConfig.Resources.NanoCPUs = int64(res.AsApproximateFloat64() * 1000000000)
 	}
 	if cfg.Memory != "" {
 		res, err := resource.ParseQuantity(cfg.Memory)
 		if err != nil {
-			return fmt.Errorf("parsing memory resource: %w", err)
+			return "", fmt.Errorf("parsing memory resource: %w", err)
 		}
 		hostConfig.Resources.Memory = res.Value()
 	}
@@ -111,37 +111,35 @@ func (dk *docker) StartPod(ctx context.Context, cfg *Config) error {
 		Tty:   false,
 	}, hostConfig, nil, platform, "")
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if err := dk.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return err
+		return "", err
 	}
 
-	cfg.PodID = resp.ID
-	log.Info(fmt.Sprintf("pod %s started.", cfg.PodID))
-
-	return nil
+	log.Info(fmt.Sprintf("pod %s started.", resp.ID))
+	return resp.ID, nil
 }
 
 // TerminatePod terminates a pod for supporting a Docker task,
 // if necessary.
-func (dk *docker) TerminatePod(ctx context.Context, cfg *Config) error {
+func (dk *docker) TerminatePod(ctx context.Context, pod string) error {
 	log := clog.FromContext(ctx)
 	ctx, span := otel.Tracer("melange").Start(ctx, "docker.TerminatePod")
 	defer span.End()
 
-	if cfg.PodID == "" {
+	if pod == "" {
 		return fmt.Errorf("pod not running")
 	}
 
-	if err := dk.cli.ContainerRemove(ctx, cfg.PodID, container.RemoveOptions{
+	if err := dk.cli.ContainerRemove(ctx, pod, container.RemoveOptions{
 		Force: true,
 	}); err != nil {
 		return err
 	}
 
-	log.Info(fmt.Sprintf("pod %s terminated.", cfg.PodID))
+	log.Info(fmt.Sprintf("pod %s terminated.", pod))
 
 	return nil
 }
@@ -187,8 +185,8 @@ func (dk *docker) waitForCommand(ctx context.Context, r io.Reader) error {
 
 // Run runs a Docker task given a Config and command string.
 // The resultant filesystem can be read from the io.ReadCloser
-func (dk *docker) Run(ctx context.Context, cfg *Config, args ...string) error {
-	if cfg.PodID == "" {
+func (dk *docker) Run(ctx context.Context, pod string, cfg *Config, args ...string) error {
+	if pod == "" {
 		return fmt.Errorf("pod not running")
 	}
 
@@ -201,7 +199,7 @@ func (dk *docker) Run(ctx context.Context, cfg *Config, args ...string) error {
 	// TODO(epsilon-phase): building as the user "build" was removed from docker runner
 	// for consistency with other runners and to ensure that packages can be generated with files
 	// that have owners other than root. We should explore using fakeroot or similar tricks for these use-cases.
-	taskIDResp, err := dk.cli.ContainerExecCreate(ctx, cfg.PodID, types.ExecConfig{
+	taskIDResp, err := dk.cli.ContainerExecCreate(ctx, pod, types.ExecConfig{
 		Cmd:          args,
 		WorkingDir:   runnerWorkdir,
 		Env:          environ,

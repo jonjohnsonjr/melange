@@ -32,9 +32,9 @@ type Runner interface {
 	// It should return the Loader, which will be used to load the provided image
 	// as a tar stream into the Loader. That image will be used as the root when StartPod() the container.
 	OCIImageLoader() Loader
-	StartPod(ctx context.Context, cfg *Config) error
-	Run(ctx context.Context, cfg *Config, cmd ...string) error
-	TerminatePod(ctx context.Context, cfg *Config) error
+	StartPod(ctx context.Context, cfg *Config) (string, error)
+	Run(ctx context.Context, pod string, cfg *Config, cmd ...string) error
+	TerminatePod(ctx context.Context, pod string) error
 	// TempDir returns the base for temporary directory, or "" if whatever is provided by the system is fine
 	TempDir() string
 	// WorkspaceTar returns an io.ReadCloser that can be used to read the status of the workspace.

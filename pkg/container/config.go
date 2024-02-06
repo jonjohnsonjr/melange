@@ -48,7 +48,6 @@ type Config struct {
 	Capabilities Capabilities
 	Environment  map[string]string
 	ImgRef       string
-	PodID        string
 	Arch         apko_types.Architecture
 	CPU, Memory  string
 	Timeout      time.Duration

@@ -1019,6 +1019,33 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 	linterQueue := []linterTarget{}
 	cfg := b.WorkspaceConfig(ctx)
 
+	namespace := b.Namespace
+	if namespace == "" {
+		namespace = "unknown"
+	}
+
+	// add the main package to the linter queue
+	lintTarget := linterTarget{
+		pkgName: b.Configuration.Package.Name,
+		checks:  b.Configuration.Package.Checks,
+	}
+	linterQueue = append(linterQueue, lintTarget)
+
+	// add subpackages to the linter queue
+	for _, sp := range b.Configuration.Subpackages {
+		sp := sp
+		if err := os.MkdirAll(filepath.Join(b.WorkspaceDir, "melange-out", sp.Name), 0o755); err != nil {
+			return err
+		}
+
+		// add the main package to the linter queue
+		lintTarget := linterTarget{
+			pkgName: sp.Name,
+			checks:  sp.Checks,
+		}
+		linterQueue = append(linterQueue, lintTarget)
+	}
+
 	if !b.IsBuildLess() {
 		// Prepare guest directory
 		if err := os.MkdirAll(b.GuestDir, 0755); err != nil {
@@ -1046,12 +1073,13 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 			return fmt.Errorf("unable to populate cache: %w", err)
 		}
 
-		if err := b.Runner.StartPod(ctx, cfg); err != nil {
+		pod, err := b.Runner.StartPod(ctx, cfg)
+		if err != nil {
 			return fmt.Errorf("unable to start pod: %w", err)
 		}
 		if !b.DebugRunner {
 			defer func() {
-				if err := b.Runner.TerminatePod(context.WithoutCancel(ctx), cfg); err != nil {
+				if err := b.Runner.TerminatePod(context.WithoutCancel(ctx), pod); err != nil {
 					log.Warnf("unable to terminate pod: %s", err)
 				}
 			}()
@@ -1066,23 +1094,9 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 			}
 		}
 
-		// add the main package to the linter queue
-		lintTarget := linterTarget{
-			pkgName: b.Configuration.Package.Name,
-			checks:  b.Configuration.Package.Checks,
-		}
-		linterQueue = append(linterQueue, lintTarget)
-	}
-
-	namespace := b.Namespace
-	if namespace == "" {
-		namespace = "unknown"
-	}
-
-	// run any pipelines for subpackages
-	for _, sp := range b.Configuration.Subpackages {
-		sp := sp
-		if !b.IsBuildLess() {
+		// run any pipelines for subpackages
+		for _, sp := range b.Configuration.Subpackages {
+			sp := sp
 			log.Infof("running pipeline for subpackage %s", sp.Name)
 			pb.Subpackage = &sp
 
@@ -1102,25 +1116,14 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 			}
 		}
 
-		if err := os.MkdirAll(filepath.Join(b.WorkspaceDir, "melange-out", sp.Name), 0o755); err != nil {
-			return err
+		// Retrieve the post build workspace from the runner
+		log.Infof("retrieving workspace from builder: %s", pod)
+		fs := apkofs.DirFS(b.WorkspaceDir)
+		if err := b.RetrieveWorkspace(ctx, fs); err != nil {
+			return fmt.Errorf("retrieving workspace: %w", err)
 		}
-
-		// add the main package to the linter queue
-		lintTarget := linterTarget{
-			pkgName: sp.Name,
-			checks:  sp.Checks,
-		}
-		linterQueue = append(linterQueue, lintTarget)
+		log.Infof("retrieved and wrote post-build workspace to: %s", b.WorkspaceDir)
 	}
-
-	// Retrieve the post build workspace from the runner
-	log.Infof("retrieving workspace from builder: %s", cfg.PodID)
-	fs := apkofs.DirFS(b.WorkspaceDir)
-	if err := b.RetrieveWorkspace(ctx, fs); err != nil {
-		return fmt.Errorf("retrieving workspace: %w", err)
-	}
-	log.Infof("retrieved and wrote post-build workspace to: %s", b.WorkspaceDir)
 
 	// perform package linting
 	for _, lt := range linterQueue {
@@ -1149,19 +1152,6 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 	// generate SBOMs for subpackages
 	for _, sp := range b.Configuration.Subpackages {
 		sp := sp
-
-		if !b.IsBuildLess() {
-			log.Infof("generating SBOM for subpackage %s", sp.Name)
-			pb.Subpackage = &sp
-
-			result, err := pb.ShouldRun(sp)
-			if err != nil {
-				return err
-			}
-			if !result {
-				continue
-			}
-		}
 
 		if err := generator.GenerateSBOM(ctx, &sbom.Spec{
 			Path:           filepath.Join(b.WorkspaceDir, "melange-out", sp.Name),

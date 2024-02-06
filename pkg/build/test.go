@@ -585,12 +585,13 @@ func (t *Test) TestPackage(ctx context.Context) error {
 	if !t.IsTestless() {
 		cfg.Arch = t.Arch
 
-		if err := t.Runner.StartPod(ctx, cfg); err != nil {
+		pod, err := t.Runner.StartPod(ctx, cfg)
+		if err != nil {
 			return fmt.Errorf("unable to start pod: %w", err)
 		}
 		if !t.DebugRunner {
 			defer func() {
-				if err := t.Runner.TerminatePod(ctx, cfg); err != nil {
+				if err := t.Runner.TerminatePod(ctx, pod); err != nil {
 					log.Warnf("unable to terminate pod: %s", err)
 				}
 			}()
@@ -648,12 +649,13 @@ func (t *Test) TestPackage(ctx context.Context) error {
 				return fmt.Errorf("unable to build workspace config: %w", err)
 			}
 			subCfg.Arch = t.Arch
-			if err := t.Runner.StartPod(ctx, subCfg); err != nil {
+			pod, err := t.Runner.StartPod(ctx, subCfg)
+			if err != nil {
 				return fmt.Errorf("unable to start subpackage test pod: %w", err)
 			}
 			if !t.DebugRunner {
 				defer func() {
-					if err := t.Runner.TerminatePod(ctx, subCfg); err != nil {
+					if err := t.Runner.TerminatePod(ctx, pod); err != nil {
 						log.Warnf("unable to terminate subpackage test pod: %s", err)
 					}
 				}()

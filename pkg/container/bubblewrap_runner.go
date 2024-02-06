@@ -52,7 +52,7 @@ func (bw *bubblewrap) Name() string {
 }
 
 // Run runs a Bubblewrap task given a Config and command string.
-func (bw *bubblewrap) Run(ctx context.Context, cfg *Config, args ...string) error {
+func (bw *bubblewrap) Run(ctx context.Context, pod string, cfg *Config, args ...string) error {
 	baseargs := []string{}
 
 	// always be sure to mount the / first!
@@ -116,17 +116,17 @@ func (bw *bubblewrap) TempDir() string {
 
 // StartPod starts a pod if necessary.  On Bubblewrap, we just run
 // ldconfig to prime ld.so.cache for glibc < 2.37 builds.
-func (bw *bubblewrap) StartPod(ctx context.Context, cfg *Config) error {
+func (bw *bubblewrap) StartPod(ctx context.Context, cfg *Config) (string, error) {
 	ctx, span := otel.Tracer("melange").Start(ctx, "bubblewrap.StartPod")
 	defer span.End()
 
 	script := "[ -x /sbin/ldconfig ] && /sbin/ldconfig /lib || true"
-	return bw.Run(ctx, cfg, "/bin/sh", "-c", script)
+	return "", bw.Run(ctx, "", cfg, "/bin/sh", "-c", script)
 }
 
 // TerminatePod terminates a pod if necessary.  Not implemented
 // for Bubblewrap runners.
-func (bw *bubblewrap) TerminatePod(ctx context.Context, cfg *Config) error {
+func (bw *bubblewrap) TerminatePod(ctx context.Context, pod string) error {
 	return nil
 }
 

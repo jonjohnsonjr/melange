@@ -108,18 +108,14 @@ func (*k8s) Name() string {
 }
 
 // StartPod implements Runner
-func (k *k8s) StartPod(ctx context.Context, cfg *Config) error {
+func (k *k8s) StartPod(ctx context.Context, cfg *Config) (string, error) {
 	log := clog.FromContext(ctx)
 	ctx, span := otel.Tracer("melange").Start(ctx, "k8s.StartPod")
 	defer span.End()
 
-	if cfg.PodID != "" {
-		return fmt.Errorf("pod already running: %s", cfg.PodID)
-	}
-
 	builderPod, err := k.NewBuildPod(ctx, cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	podclient := k.clientset.CoreV1().Pods(builderPod.Namespace)
@@ -128,7 +124,7 @@ func (k *k8s) StartPod(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		data, _ := yaml.Marshal(builderPod)
 		log.Warnf("failed creating builder pod\n%v", string(data))
-		return fmt.Errorf("creating builder pod: %w", err)
+		return "", fmt.Errorf("creating builder pod: %w", err)
 	}
 	log.Infof("created builder pod '%s' with UID '%s'", pod.Name, pod.UID)
 
@@ -156,21 +152,20 @@ func (k *k8s) StartPod(ctx context.Context, cfg *Config) error {
 		// all commands are already captured by melange, however this could change in
 		// the future
 		log.Errorf("builder pod [%s/%s] timed out waiting for ready status, dumping pod data\n\n%s", pod.Namespace, pod.Name, string(data))
-		return err
+		return "", err
 	}
 	log.Infof("pod [%s/%s] is ready", pod.Namespace, pod.Name)
 
 	k.pod = pod
-	cfg.PodID = pod.Name
-	return nil
+	return pod.Name, nil
 }
 
 // Run implements Runner
-func (k *k8s) Run(ctx context.Context, cfg *Config, cmd ...string) error {
+func (k *k8s) Run(ctx context.Context, pod string, cfg *Config, cmd ...string) error {
 	ctx, span := otel.Tracer("melange").Start(ctx, "k8s.Run")
 	defer span.End()
 
-	if cfg.PodID == "" {
+	if pod == "" {
 		return fmt.Errorf("pod isn't running")
 	}
 
@@ -178,7 +173,7 @@ func (k *k8s) Run(ctx context.Context, cfg *Config, cmd ...string) error {
 	defer stdout.Close()
 	defer stderr.Close()
 
-	err := k.Exec(ctx, cfg.PodID, cmd, remotecommand.StreamOptions{
+	err := k.Exec(ctx, pod, cmd, remotecommand.StreamOptions{
 		Stdout: stdout,
 		Stderr: stderr,
 	})
@@ -195,22 +190,21 @@ func (*k8s) TempDir() string {
 }
 
 // TerminatePod implements Runner
-func (k *k8s) TerminatePod(ctx context.Context, cfg *Config) error {
+func (k *k8s) TerminatePod(ctx context.Context, pod string) error {
 	ctx, span := otel.Tracer("melange").Start(ctx, "k8s.TerminatePod")
 	defer span.End()
 
-	if cfg.PodID == "" {
+	if pod == "" {
 		return fmt.Errorf("pod not running")
 	}
 
 	deletePolicy := metav1.DeletePropagationForeground
-	if err := k.clientset.CoreV1().Pods(k.Config.Namespace).Delete(ctx, cfg.PodID, metav1.DeleteOptions{
+	if err := k.clientset.CoreV1().Pods(k.Config.Namespace).Delete(ctx, pod, metav1.DeleteOptions{
 		PropagationPolicy: &deletePolicy,
 	}); err != nil {
 		return fmt.Errorf("deleting pod: %v", err)
 	}
 
-	cfg.PodID = ""
 	k.pod = nil
 	return nil
 }
