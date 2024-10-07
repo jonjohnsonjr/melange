@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -152,12 +153,17 @@ func validateWith(data map[string]string, inputs map[string]config.Input) (map[s
 }
 
 // Build a script to run as part of evalRun
-func buildEvalRunCommand(pipeline *config.Pipeline, debugOption rune, workdir string, fragment string) []string {
+func buildEvalRunCommand(debugOption rune, workdir string, fragment string, env map[string]string) []string {
+	envs := make([]string, 0, len(env))
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		envs = append(envs, fmt.Sprintf("%s=%s", k, env[k]))
+	}
 	script := fmt.Sprintf(`set -e%c
+%s
 [ -d '%s' ] || mkdir -p '%s'
 cd '%s'
 %s
-exit 0`, debugOption, workdir, workdir, workdir, fragment)
+exit 0`, debugOption, strings.Join(envs, "\n"), workdir, workdir, workdir, fragment)
 	return []string{"/bin/sh", "-c", script}
 }
 
@@ -217,9 +223,14 @@ func (r *pipelineRunner) runPipeline(ctx context.Context, pipeline *config.Pipel
 		ctx = clog.WithLogger(ctx, log.With(slogs...))
 	}
 
-	command := buildEvalRunCommand(pipeline, debugOption, workdir, pipeline.Runs)
+	env := maps.Clone(r.config.Environment)
+	for k, v := range envOverride {
+		env[k] = v
+	}
+
+	command := buildEvalRunCommand(debugOption, workdir, pipeline.Runs, env)
 	if err := r.runner.Run(ctx, r.config, envOverride, command...); err != nil {
-		if err := r.maybeDebug(ctx, pipeline.Runs, envOverride, command, workdir, err); err != nil {
+		if err := r.maybeDebug(ctx, pipeline.Runs, env, command, workdir, err); err != nil {
 			return false, err
 		}
 	}
@@ -243,7 +254,7 @@ func (r *pipelineRunner) runPipeline(ctx context.Context, pipeline *config.Pipel
 	return true, nil
 }
 
-func (r *pipelineRunner) maybeDebug(ctx context.Context, fragment string, envOverride map[string]string, cmd []string, workdir string, runErr error) error {
+func (r *pipelineRunner) maybeDebug(ctx context.Context, fragment string, env map[string]string, cmd []string, workdir string, runErr error) error {
 	if !r.interactive {
 		return runErr
 	}
@@ -258,10 +269,10 @@ func (r *pipelineRunner) maybeDebug(ctx context.Context, fragment string, envOve
 
 	// This is a bit of a hack but I want non-busybox shells to have a working history during interactive debugging,
 	// and I suspect busybox is the least helpful here, so just make everything read from $HOME/.ash_history.
-	if home, ok := envOverride["HOME"]; ok {
-		envOverride["HISTFILE"] = path.Join(home, ".ash_history")
+	if home, ok := env["HOME"]; ok {
+		env["HISTFILE"] = path.Join(home, ".ash_history")
 	} else if home, ok := r.config.Environment["HOME"]; ok {
-		envOverride["HISTFILE"] = path.Join(home, ".ash_history")
+		env["HISTFILE"] = path.Join(home, ".ash_history")
 	}
 
 	log.Errorf("Step failed: %v\n%s", runErr, strings.Join(cmd, " "))
@@ -281,7 +292,10 @@ func (r *pipelineRunner) maybeDebug(ctx context.Context, fragment string, envOve
 		return fmt.Errorf("failed to write history file: %w", err)
 	}
 
-	if dbgErr := dbg.Debug(ctx, r.config, envOverride, []string{"/bin/sh", "-c", fmt.Sprintf("cd %s && exec /bin/sh", workdir)}...); dbgErr != nil {
+	// I don't think this actually works.
+	command := buildEvalRunCommand(' ', workdir, "exec /bin/sh", env)
+
+	if dbgErr := dbg.Debug(ctx, r.config, env, command...); dbgErr != nil {
 		return fmt.Errorf("failed to debug: %w; original error: %w", dbgErr, runErr)
 	}
 

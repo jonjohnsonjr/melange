@@ -1051,6 +1051,7 @@ func (b *Build) buildWorkspaceConfig(ctx context.Context) *container.Config {
 	}
 
 	// TODO(kaniini): Disable networking capability according to the pipeline requirements.
+	// TODO: https://github.com/containers/bubblewrap/issues/61
 	caps := container.Capabilities{
 		Networking: true,
 	}
