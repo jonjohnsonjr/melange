@@ -77,7 +77,7 @@ func (bw *bubblewrap) Run(ctx context.Context, cfg *Config, envOverride map[stri
 		return fmt.Errorf("pod %q not found", cfg.PodID)
 	}
 
-	execCmd := bw.cmd(ctx, pod, cfg, false, envOverride, args...)
+	execCmd := bw.cmd(ctx, pod, cfg, false, args...)
 
 	log := clog.FromContext(ctx)
 	stdout, stderr := logwriter.New(log.Info), logwriter.New(log.Warn)
@@ -92,49 +92,16 @@ func (bw *bubblewrap) Run(ctx context.Context, cfg *Config, envOverride map[stri
 	return execCmd.Run()
 }
 
-func (bw *bubblewrap) cmd(ctx context.Context, pod *pod, cfg *Config, debug bool, envOverride map[string]string, args ...string) *exec.Cmd {
-	baseargs := []string{}
-
-	// for _, bind := range cfg.Mounts {
-	// 	baseargs = append(baseargs, "--bind", bind.Source, bind.Destination)
-	// }
-	// add the ref of the directory
-
-	baseargs = append(baseargs, // "--die-with-parent",
-		//"--pidns", bw.pidns,
-		// "--dev", "/dev",
-		// "--proc", "/proc",
+func (bw *bubblewrap) cmd(ctx context.Context, pod *pod, cfg *Config, debug bool, args ...string) *exec.Cmd {
+	baseargs := []string{
 		"--target", strconv.Itoa(pod.pid),
 		"--all",
-		// "--wd", runnerWorkdir,
-		//"--clearenv",
-	)
+		"--root",
+	}
 
-	// always be sure to mount the / first!
-	// baseargs = append(baseargs, "--bind", cfg.ImgRef, "/")
-	baseargs = append(baseargs, "--root")
-
-	// baseargs = append(baseargs, "--userns", pod.userns)
 	if cfg.RunAs != "" {
 		baseargs = append(baseargs, "--setuid", cfg.RunAs)
 	}
-
-	if !debug {
-		// This flag breaks job control, which we only care about for --interactive debugging.
-		// So we usually include it, but if we're about to debug, don't set it.
-		// baseargs = append(baseargs, "--new-session")
-	}
-
-	if !cfg.Capabilities.Networking {
-		// baseargs = append(baseargs, "--unshare-net")
-	}
-
-	// for k, v := range cfg.Environment {
-	// 	baseargs = append(baseargs, "--env", k, v)
-	// }
-	// for k, v := range envOverride {
-	// 	baseargs = append(baseargs, "--env", k, v)
-	// }
 
 	args = append(baseargs, args...)
 	execCmd := exec.CommandContext(ctx, "nsenter", args...)
@@ -150,7 +117,7 @@ func (bw *bubblewrap) Debug(ctx context.Context, cfg *Config, envOverride map[st
 		return fmt.Errorf("pod %q not found", cfg.PodID)
 	}
 
-	execCmd := bw.cmd(ctx, pod, cfg, true, envOverride, args...)
+	execCmd := bw.cmd(ctx, pod, cfg, true, args...)
 
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
@@ -253,23 +220,13 @@ func (bw *bubblewrap) StartPod(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	// pidns = fmt.Sprintf("%d", pidfd.Fd())
 	pod.pidns = "3"
 
 	pod.userfd, err = os.Open(fmt.Sprintf("/proc/%d/ns/user", pid))
 	if err != nil {
 		return err
 	}
-	// userns = fmt.Sprintf("%d", userfd.Fd())
 	pod.userns = "4"
-
-	// var err error
-	// if bw.pidns, err = getNs(pid, "pid"); err != nil {
-	// 	return fmt.Errorf("getting pid namespace: %w", err)
-	// }
-	// if bw.userns, err = getNs(pid, "user"); err != nil {
-	// 	return fmt.Errorf("getting user namespace: %w", err)
-	// }
 
 	clog.FromContext(ctx).Infof("pidns: %s\nuserns: %s", pod.pidns, pod.userns)
 
@@ -281,31 +238,6 @@ func (bw *bubblewrap) StartPod(ctx context.Context, cfg *Config) error {
 	bw.pods[cfg.PodID] = pod
 
 	return nil
-}
-
-func getNs(pid int, ns string) (string, error) {
-	filename := fmt.Sprintf("/proc/%d/ns/%s", pid, ns)
-	link, err := os.Readlink(filename)
-	if err != nil {
-		return "", fmt.Errorf("reading %q: %w", filename, err)
-	}
-
-	// Looks something like this:
-	// pid:[4026533308]
-	before, after, ok := strings.Cut(link, ":")
-	if !ok {
-		return "", fmt.Errorf("parsing %q from %q: %w", link, filename, err)
-	}
-
-	if before != ns {
-		return "", fmt.Errorf("namespace %q != %q", ns, before)
-	}
-
-	if after[0] != '[' || after[len(after)-1] != ']' {
-		return "", fmt.Errorf("invalid namespace %q", after)
-	}
-
-	return after[1 : len(after)-1], nil
 }
 
 // TerminatePod terminates a pod if necessary.  Not implemented
