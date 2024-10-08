@@ -41,11 +41,7 @@ var _ Debugger = (*bubblewrap)(nil)
 const BubblewrapName = "bubblewrap"
 
 type pod struct {
-	pid    int
-	pidfd  *os.File
-	pidns  string
-	userfd *os.File
-	userns string
+	pid int
 
 	cmd *exec.Cmd
 }
@@ -86,8 +82,6 @@ func (bw *bubblewrap) Run(ctx context.Context, cfg *Config, envOverride map[stri
 
 	execCmd.Stdout = stdout
 	execCmd.Stderr = stderr
-
-	execCmd.ExtraFiles = append(execCmd.ExtraFiles, pod.pidfd, pod.userfd)
 
 	return execCmd.Run()
 }
@@ -215,20 +209,6 @@ func (bw *bubblewrap) StartPod(ctx context.Context, cfg *Config) error {
 		pid: pid,
 		cmd: cmd,
 	}
-
-	pod.pidfd, err = os.Open(fmt.Sprintf("/proc/%d/ns/pid", pid))
-	if err != nil {
-		return err
-	}
-	pod.pidns = "3"
-
-	pod.userfd, err = os.Open(fmt.Sprintf("/proc/%d/ns/user", pid))
-	if err != nil {
-		return err
-	}
-	pod.userns = "4"
-
-	clog.FromContext(ctx).Infof("pidns: %s\nuserns: %s", pod.pidns, pod.userns)
 
 	if !cfg.Capabilities.Networking {
 		return fmt.Errorf("https://github.com/containers/bubblewrap/issues/61")
