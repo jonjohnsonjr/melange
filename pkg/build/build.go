@@ -39,6 +39,7 @@ import (
 	apko_types "chainguard.dev/apko/pkg/build/types"
 	"chainguard.dev/apko/pkg/options"
 	"chainguard.dev/apko/pkg/sbom/generator/spdx"
+	"chainguard.dev/apko/pkg/tarfs"
 	"github.com/chainguard-dev/clog"
 	purl "github.com/package-url/packageurl-go"
 	"github.com/yookoala/realpath"
@@ -296,7 +297,7 @@ func (b *Build) Close(ctx context.Context) error {
 //
 // NB: This has side effects! This mutates Build by overwriting Configuration.Environment with
 // a locked version (packages resolved to versions) so we can record which packages were used.
-func (b *Build) buildGuest(ctx context.Context, imgConfig apko_types.ImageConfiguration, guestFS apkofs.FullFS) (string, error) {
+func (b *Build) buildGuest(ctx context.Context, imgConfig apko_types.ImageConfiguration) (string, error) {
 	log := clog.FromContext(ctx)
 	ctx, span := otel.Tracer("melange").Start(ctx, "buildGuest")
 	defer span.End()
@@ -339,7 +340,7 @@ func (b *Build) buildGuest(ctx context.Context, imgConfig apko_types.ImageConfig
 
 	opts = append(opts, apko_build.WithImageConfiguration(*locked))
 
-	bc, err := apko_build.New(ctx, guestFS, opts...)
+	bc, err := apko_build.New(ctx, tarfs.New(), opts...)
 	if err != nil {
 		return "", fmt.Errorf("unable to create build context: %w", err)
 	}
@@ -731,8 +732,7 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 
 		log.Infof("building workspace in '%s' with apko", b.GuestDir)
 
-		guestFS := apkofs.DirFS(b.GuestDir, apkofs.WithCreateDir())
-		imgRef, err := b.buildGuest(ctx, b.Configuration.Environment, guestFS)
+		imgRef, err := b.buildGuest(ctx, b.Configuration.Environment)
 		if err != nil {
 			return fmt.Errorf("unable to build guest: %w", err)
 		}
